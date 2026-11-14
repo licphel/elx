@@ -1,0 +1,80 @@
+// Direct, nested and variadic macros; braces isolate macro-local variables.
+#define COUNT 3
+#define ADD(a,b) ((a)+(b))
+#define NESTED(a) ADD(a,COUNT)
+#define COUNT_REST(a,b,c...) len(c)
+#define FIRST_REST(a,b,c...) c[0]
+#define INCREMENT(value) { local step=1; value+=step; }
+#define CONTINUED(a,b) \
+  ((a) + (b))
+#define ALIAS ADD
+#define MORE_ALIAS ALIAS
+
+assert(COUNT==3);
+assert(ADD(2,4)==6);
+assert(NESTED(4)==7);
+assert(COUNT_REST(1,2)==0);
+assert(COUNT_REST(1,2,3,4,5)==3);
+assert(FIRST_REST(1,2,{x=[7,8]}).x[0]==7);
+assert(CONTINUED(5,6)==11);
+assert(ALIAS(4,5)==9 && MORE_ALIAS(5,6)==11);
+assert('COUNT ADD(1,2)'=='COUNT ADD(1,2)');
+local step=20;
+local value=0;
+INCREMENT(value)
+INCREMENT(value)
+assert(value==2 && step==20);
+
+// The same declaration form is used by script and macro variadic parameters.
+local function total(first,rest...) {
+  local sum=first;
+  for v in rest { sum+=v; }
+  return sum,len(rest);
+}
+local sum,count=total(1,2,3,4);
+assert(sum==10 && count==3);
+sum,count=total(1);
+assert(sum==1 && count==0);
+assert(total(1,*[2,3])==6);
+local function defaults(first=5,rest...) { return first+len(rest); }
+assert(defaults()==5 && defaults(3,8,9)==5);
+assert(defaults(first=6)==6);
+local function only(rest...) { return len(rest); }
+assert(only()==0 && only(1,2,3)==3);
+local owner={};
+function owner:count(rest...) { return len(rest); }
+assert(owner:count(1,2)==2);
+native function documented(values...: any) -> int;
+native function print(values...: any) -> void;
+native function io.print(values...: any) -> void;
+require('io').print();
+
+assert(len([])==0 && len([1,2,3])==3);
+assert(len({a=1,b=2})==2);
+local t={size=10,length=20};
+assert(len(t)==2 && t.size==10 && t.length==20);
+assert(len(true)==1 && len(byte(1))==1 && len(1s)==2);
+assert(len(1)==4 && len(1u)==4 && len(1l)==8 && len(1ul)==8);
+assert(len(1.0f)==4 && len(1.0)==8);
+assert(len('a中😀')==3 && len('')==0 && len(null)==0);
+local opaque=&value;
+assert(len(opaque)==0 && len(total)==0);
+local builtinLen=len;
+assert(builtinLen([1,2])==2);
+local function shadow(len) { return len(); }
+assert(shadow(function() { return 9; })==9);
+
+// sys.env is the actual environment table, not a copied snapshot.
+sys.env.macro_global=42;
+assert(macro_global==42);
+macro_global=43;
+assert(sys.env.macro_global==43);
+sys.env['_hidden_test']=7;
+assert(sys.env['_hidden_test']==7);
+assert(referenceequal(sys,require('sys')));
+require('gc').collect();
+assert(sys.env.macro_global==43);
+assert(sys.remove(sys.env,'macro_global'));
+assert(macro_global==null);
+assert(FILENAME=='macros.elx');
+return true;

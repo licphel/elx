@@ -1,0 +1,10 @@
+rootProject.name = 'elx'
+
+dependencyResolutionManagement {
+  versionCatalogs {
+    libs {
+      library('jspecify', 'org.jspecify', 'jspecify').version('1.0.0')
+      library('fastutil', 'it.unimi.dsi', 'fastutil').version('8.5.15')
+    }
+  }
+}

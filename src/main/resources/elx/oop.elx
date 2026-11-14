@@ -1,0 +1,51 @@
+local function findMethod(class, name) {
+  local method = getrawattr(class, name);
+  if method != null { return method; }
+  local parent = getrawattr(class, 'parent');
+  if parent != null { return findMethod(parent, name); }
+  return null;
+}
+
+local function isAssignableFrom(ancestor, cls) {
+  local current = cls;
+  while current != null {
+    if current == ancestor { return true; }
+    current = getrawattr(current, 'parent');
+  }
+  return false;
+}
+
+local function instanceof(obj, cls) {
+  if obj == null { return false; }
+  local objClass = getrawattr(obj, 'class');
+  if objClass == null { return false; }
+  return isAssignableFrom(cls, objClass);
+}
+
+local function callCtor(instance, cls, args...) {
+  local parent = getrawattr(cls, 'parent');
+  if parent != null { callCtor(instance, parent); }
+  local ctor = getrawattr(cls, 'ctor');
+  if ctor != null { ctor(instance, *args); }
+}
+
+local function class(parent=null) {
+  local result = {parent=parent};
+  setmetatable(result, {
+    call=function(self, args...) {
+      local instance = {class=self};
+      setmetatable(instance, {
+        getattr=function(target, name) {
+          local value = getrawattr(target, name);
+          if value != null { return value; }
+          return findMethod(self, name);
+        }
+      });
+      callCtor(instance, self, *args);
+      return instance;
+    }
+  });
+  return result;
+}
+
+return {class=class, instanceof=instanceof, isAssignableFrom=isAssignableFrom};

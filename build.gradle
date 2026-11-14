@@ -1,0 +1,40 @@
+plugins {
+  id 'java-library'
+}
+
+// Elox is the behavioral reference for differential tests, not a runtime dependency.
+dependencies {
+  compileOnly libs.jspecify
+  testCompileOnly libs.jspecify
+  implementation libs.fastutil
+}
+
+// NativeMemory uses the same JDK 17 FFM incubator as Elox's native backend.
+tasks.withType(JavaCompile).configureEach {
+  options.compilerArgs.addAll(['--add-modules', 'jdk.incubator.foreign'])
+}
+tasks.withType(JavaExec).configureEach {
+  jvmArgs '--add-modules=jdk.incubator.foreign', '--enable-native-access=ALL-UNNAMED'
+}
+tasks.withType(Test).configureEach {
+  jvmArgs '--add-modules=jdk.incubator.foreign', '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('elxMemoryTest', JavaExec) {
+  group = 'verification'
+  description = 'Checks both memory backends, registers, heaps, external fields and GC pins.'
+  dependsOn tasks.named('testClasses')
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'io.viki.elx.MemoryTests'
+}
+tasks.named('check') { dependsOn tasks.named('elxMemoryTest') }
+tasks.named('test') { failOnNoDiscoveredTests = false }
+
+tasks.register('elxVmTest', JavaExec) {
+  group = 'verification'
+  description = 'Executes hand-assembled ELX programs in the switch interpreter.'
+  dependsOn tasks.named('testClasses')
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'io.viki.elx.vm.VmTests'
+}
+tasks.named('check') { dependsOn tasks.named('elxVmTest') }
