@@ -33,7 +33,7 @@ public final class MachineIsaTests {
         args.vm().collect(true);
         args.vm().execute(new Compiler().compile("return 11"));
         check(args.i(0)==41,"reentry overwrote environment input span");
-        args.returnLong(args.i(0)+1);
+        args.rl(args.i(0)+1);
       });
       a=new Assembler();
       // ECALL spans use real ABI addresses; CX_LOCAL_PTR now creates a managed language pointer.

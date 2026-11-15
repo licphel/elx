@@ -72,7 +72,7 @@ public final class Std {
         library.constant("inf", Type.DOUBLE, Double.doubleToRawLongBits(Double.POSITIVE_INFINITY));
         library.function("pow", a -> {
           a.arity(2);
-          a.returnDouble(Math.pow(a.d(0), a.d(1)));
+          a.rd(Math.pow(a.d(0), a.d(1)));
         });
         library.function("min", a -> extreme(a, true));
         library.function("max", a -> extreme(a, false));
@@ -81,20 +81,20 @@ public final class Std {
         library.function("length", a -> {
           a.arity(1);
           String s = a.s(0);
-          a.returnInt(s.codePointCount(0, s.length()));
+        a.ri(s.codePointCount(0, s.length()));
         });
         library.function("bytelen", a -> {
           a.arity(1);
           a.s(0);
-          a.returnInt(a.memory().load32(a.bits(0)));
+        a.ri(a.memory().load32(a.bits(0)));
         });
         library.function("upper", a -> {
           a.arity(1);
-          a.returnString(a.s(0).toUpperCase(Locale.ROOT));
+        a.rs(a.s(0).toUpperCase(Locale.ROOT));
         });
         library.function("lower", a -> {
           a.arity(1);
-          a.returnString(a.s(0).toLowerCase(Locale.ROOT));
+        a.rs(a.s(0).toLowerCase(Locale.ROOT));
         });
         library.function("sub", a -> {
           if (a.size() < 2 || a.size() > 3) {
@@ -103,11 +103,11 @@ public final class Std {
           String s = a.s(0);
           int from = Math.toIntExact(a.i(1));
           int end = a.size() == 3 ? Math.toIntExact(a.i(2)) : s.codePointCount(0, s.length());
-          a.returnString(s.substring(s.offsetByCodePoints(0, from), s.offsetByCodePoints(0, end)));
+        a.rs(s.substring(s.offsetByCodePoints(0, from), s.offsetByCodePoints(0, end)));
         });
         library.function("contains", a -> {
           a.arity(2);
-          a.returnBoolean(a.s(0).contains(a.s(1)));
+        a.rb(a.s(0).contains(a.s(1)));
         });
       }
       case "io" -> {
@@ -116,7 +116,7 @@ public final class Std {
         library.function("read_text", a -> {
           a.arity(1);
           try {
-            a.returnString(Files.readString(Path.of(a.s(0))));
+          a.rs(Files.readString(Path.of(a.s(0))));
           } catch (IOException e) {
             throw new UncheckedIOException(e);
           }
@@ -131,7 +131,7 @@ public final class Std {
         });
         library.function("exists", a -> {
           a.arity(1);
-          a.returnBoolean(Files.exists(Path.of(a.s(0))));
+          a.rb(Files.exists(Path.of(a.s(0))));
         });
       }
       case "sys" -> {
@@ -142,11 +142,11 @@ public final class Std {
         });
         library.function("remove", a -> {
           a.arity(2);
-          a.returnBoolean(ElxTable.remove(a.memory(), a.t(0), a.slot(1)));
+          a.rb(ElxTable.remove(a.memory(), a.t(0), a.slot(1)));
         });
         library.function("identity", a -> {
           a.arity(1);
-          a.returnLong(a.bits(0));
+          a.rl(a.bits(0));
         });
       }
       case "gc" -> {
@@ -180,21 +180,21 @@ public final class Std {
       case "util" -> {
         library.function("base64_encode", a -> {
           a.arity(1);
-          a.returnString(Base64.getEncoder().encodeToString(a.s(0).getBytes(StandardCharsets.UTF_8)));
+      a.rs(Base64.getEncoder().encodeToString(a.s(0).getBytes(StandardCharsets.UTF_8)));
         });
         library.function("base64_decode", a -> {
           a.arity(1);
-          a.returnString(new String(Base64.getDecoder().decode(a.s(0)), StandardCharsets.UTF_8));
+      a.rs(new String(Base64.getDecoder().decode(a.s(0)), StandardCharsets.UTF_8));
         });
         library.function("time", a -> {
           a.arity(0);
-          a.returnLong(System.currentTimeMillis());
+      a.rl(System.currentTimeMillis());
         });
         library.function("date", a -> {
           if (a.size() > 1) {
             throw new IllegalArgumentException("date expects optional epoch milliseconds");
           }
-          a.returnString(Instant.ofEpochMilli(a.size() == 0 ? System.currentTimeMillis() : a.i(0)).toString());
+      a.rs(Instant.ofEpochMilli(a.size() == 0 ? System.currentTimeMillis() : a.i(0)).toString());
         });
       }
       default -> {
@@ -207,7 +207,7 @@ public final class Std {
   private static void unary(SimpleLibrary library, String name, DoubleUnaryOperator operation) {
     library.function(name, a -> {
       a.arity(1);
-      a.returnDouble(operation.applyAsDouble(a.d(0)));
+      a.rd(operation.applyAsDouble(a.d(0)));
     });
   }
 
@@ -219,6 +219,6 @@ public final class Std {
     for (int i = 1; i < args.size(); i++) {
       result = minimum ? Math.min(result, args.d(i)) : Math.max(result, args.d(i));
     }
-    args.returnDouble(result);
+    args.rd(result);
   }
 }

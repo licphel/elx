@@ -63,7 +63,8 @@ public enum Metamethod {
   INIT("init"),
   STR("str"),
   INC("++"),
-  DEC("--");
+  DEC("--"),
+  GC("gc");
 
   private static final Metamethod[] ALL = values();
   private static final int[] OPERATORS = new int[Op.values().length];

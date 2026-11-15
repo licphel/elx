@@ -29,13 +29,20 @@ import org.jspecify.annotations.Nullable;
 /**
  * Explicit host-boundary lifetime token. All implementations are
  * thread-confined; callers must close heap pins when a borrowed pointer is no
- * longer needed.
+ * longer needed. A pin object represents ownership even when its exported value
+ * is Java {@code null}, so a non-null pin and a non-null exported value are separate
+ * guarantees. Heap-backed pins depend on their owning runtime remaining open.
  *
  * @param <T> the pinned value type, nullable
  */
 public interface Pin<T extends @Nullable Object> extends AutoCloseable {
   /**
    * Exports the value represented by this pin.
+   *
+   * <p>The result may be null independently of {@code T}. ELX {@code null} is
+   * represented by a primitive pin containing Java {@code null}. An external-field
+   * adapter may also export a null field value. Heap-backed access checks liveness
+   * and throws on expiration rather than using null to indicate a closed pin.
    *
    * @return current value, possibly {@code null}
    * @throws IllegalStateException if a heap-backed pin is no longer alive

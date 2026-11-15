@@ -43,9 +43,48 @@ public final class Args {
   private final VM vm;
   private long inputs, outputs;
   private int count, capacity, returned;
+  private @Nullable String memberName;
 
   private Args(VM vm) {
     this.vm = vm;
+  }
+
+  /**
+   * Creates a borrowed argument/result view for an external host-member callback.
+   * The returned view is valid only until that callback returns.
+   *
+   * @param vm VM that owns the borrowed windows
+   * @param inputs input-window base address
+   * @param count number of input slots
+   * @param outputs output-window base address
+   * @param capacity number of output slots available
+   * @return borrowed callback view
+   */
+  public static Args host(VM vm, long inputs, int count, long outputs, int capacity) {
+    return host(vm, null, inputs, count, outputs, capacity);
+  }
+
+  /**
+   * Creates a borrowed argument/result view for an external host-member callback.
+   * The returned view is valid only until that callback returns.
+   *
+   * @param vm VM that owns the borrowed windows
+   * @param memberName the metamethod member name
+   * @param inputs input-window base address
+   * @param count number of input slots
+   * @param outputs output-window base address
+   * @param capacity number of output slots available
+   * @return borrowed callback view
+   */
+  public static Args host(VM vm, @Nullable String memberName, long inputs, int count,
+                          long outputs, int capacity) {
+    Args args = new Args(vm);
+    args.memberName = memberName;
+    args.inputs = inputs;
+    args.count = count;
+    args.outputs = outputs;
+    args.capacity = capacity;
+    return args;
   }
 
   /**
@@ -77,6 +116,7 @@ public final class Args {
         } finally {
           args.inputs = args.outputs = 0;
           args.count = args.capacity = args.returned = 0;
+          args.memberName = null;
           depth--;
         }
       }
@@ -91,6 +131,15 @@ public final class Args {
   /** @return the VM that owns this borrowed call window */
   public VM vm() {
     return vm;
+  }
+
+  /** @return the member name for a host metamethod callback */
+  public String name() {
+    String name = memberName;
+    if (name == null) {
+      throw new IllegalStateException("This Args view has no host member name");
+    }
+    return name;
   }
 
   /** @return VM memory containing argument and result slots */
@@ -141,6 +190,15 @@ public final class Args {
    */
   public void returnCount(int count) {
     returned = count;
+  }
+
+  /**
+   * Returns the number of values appended to this callback's result window.
+   *
+   * @return number of returned values
+   */
+  public int returnedCount() {
+    return returned;
   }
 
   /**
@@ -285,58 +343,91 @@ public final class Args {
     returned++;
   }
 
-  /** Appends a null result. */
-  public void returnNull() {
+  /**
+   * Appends an ELX null result.
+   */
+  public void rn() {
     returnValue(Type.NULL, 0);
   }
 
-  /** @param value 8-bit integer result */
-  public void returnByte(byte value) {
+  /**
+   * Appends an 8-bit integer result.
+   *
+   * @param value the returned value
+   */
+  public void rbyte(byte value) {
     returnValue(Type.BYTE, value);
   }
 
-  /** @param value 16-bit integer result */
-  public void returnShort(short value) {
+  /**
+   * Appends a 16-bit integer result.
+   *
+   * @param value the returned value
+   */
+  public void rshort(short value) {
     returnValue(Type.SHORT, value);
   }
 
-  /** @param value 32-bit integer result */
-  public void returnInt(int value) {
+  /**
+   * Appends a 32-bit integer result.
+   *
+   * @param value the returned value
+   */
+  public void ri(int value) {
     returnValue(Type.INT, value);
   }
 
-  /** @param value 64-bit integer result */
-  public void returnLong(long value) {
+  /**
+   * Appends a 64-bit integer result.
+   *
+   * @param value the returned value
+   */
+  public void rl(long value) {
     returnValue(Type.LONG, value);
   }
 
-  /** @param value single-precision result */
-  public void returnFloat(float value) {
+  /**
+   * Appends a single-precision result.
+   *
+   * @param value the returned value
+   */
+  public void rf(float value) {
     returnValue(Type.FLOAT, Float.floatToRawIntBits(value));
   }
 
-  /** @param value double-precision result */
-  public void returnDouble(double value) {
+  /**
+   * Appends a double-precision result.
+   *
+   * @param value the returned value
+   */
+  public void rd(double value) {
     returnValue(Type.DOUBLE, Double.doubleToRawLongBits(value));
   }
 
-  /** @param value boolean result */
-  public void returnBoolean(boolean value) {
+  /**
+   * Appends a boolean result.
+   *
+   * @param value the returned value
+   */
+  public void rb(boolean value) {
     returnValue(Type.BOOL, value ? 1 : 0);
   }
 
-  /** @param value Java string to import and append */
-  public void returnString(String value) {
+  /**
+   * Appends a Java string as an ELX string result.
+   *
+   * @param value the returned value
+   */
+  public void rs(String value) {
     returnValue(Type.STRING, heap().importString(value));
   }
 
-  /** @param value Java object to import and append */
   /**
-   * Imports a Java object through the external heap and appends it as a result.
+   * Appends a Java value as an external or scalar result.
    *
-   * @param value Java value, or {@code null}
+   * @param value the returned value
    */
-  public void returnObject(@Nullable Object value) {
+  public void ro(@Nullable Object value) {
     if (returned == 4) {
       throw new IllegalStateException("A host function may return at most four values");
     }

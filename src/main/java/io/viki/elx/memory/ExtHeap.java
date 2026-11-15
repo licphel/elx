@@ -25,8 +25,11 @@
 package io.viki.elx.memory;
 
 import io.viki.elx.Type;
+import io.viki.elx.lib.Args;
+import io.viki.elx.value.Metamethod;
 import it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap;
 import org.jspecify.annotations.Nullable;
+import io.viki.elx.vm.VM;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -37,11 +40,12 @@ import java.util.Arrays;
  * here; they are never encoded as JVM addresses. Implementations supply member
  * access/calls without imposing reflection. Thread-confined; shares internal Memory.
  */
-public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
+public class ExtHeap extends ManagedHeap<@Nullable Object> {
   private final ElxHeap internal;
   private final Memory memory;
   private final ArrayList<@Nullable Object> objects = new ArrayList<>();
   private final Reference2LongOpenHashMap<Object> identities = new Reference2LongOpenHashMap<>();
+  private @Nullable VM vm;
   private long[] owners = new long[INITIAL_CAPACITY], members = new long[INITIAL_CAPACITY];
   private long serial;
 
@@ -84,11 +88,12 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * Adds or reuses a host object handle using reference identity semantics.
    *
    * <p>Repeated calls for the same Java object return the same external handle;
-   * equality is deliberately not based on {@link Object#equals(Object)}.</p>
+   * equality is deliberately not based on {@link Object#equals(Object)}.
+   * Use {@link #importJava(long, Object)} to import nullable values into slots.
+   * That method writes {@link Type#NULL} for Java null and registers only non-null objects.</p>
    *
-   * @param value host object to expose
+   * @param value non-null host object to expose
    * @return negative external handle
-   * @throws NullPointerException if {@code value} is null
    * @throws IllegalStateException if this heap is closed
    */
   public final long add(Object value) {
@@ -222,7 +227,18 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param memberNamePtr ELX string pointer naming the member
    * @param result destination slot address
    */
-  protected abstract void readField(Object target, long memberNamePtr, long result);
+  protected void readField(Object target, long memberNamePtr, long result) {
+    if (target instanceof HostAccess host) {
+      Args args = hostArgs(memberName(memberNamePtr), 0, 0, result, 1);
+      host.elx_handle(Metamethod.GET, args);
+      if (args.returnedCount() != 1) {
+        throw new IllegalStateException("Host member read must return exactly one value");
+      }
+      return;
+    }
+    throw new UnsupportedOperationException("Host object does not implement HostAccess: "
+        + target.getClass().getName());
+  }
 
   /**
    * Writes an ELX slot into a host member.
@@ -231,7 +247,14 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param memberNamePtr ELX string pointer naming the member
    * @param value source slot address
    */
-  protected abstract void writeField(Object target, long memberNamePtr, long value);
+  protected void writeField(Object target, long memberNamePtr, long value) {
+    if (target instanceof HostAccess host) {
+      host.elx_handle(Metamethod.SET, hostArgs(memberName(memberNamePtr), value, 1, 0, 0));
+      return;
+    }
+    throw new UnsupportedOperationException("Host object does not implement HostAccess: "
+        + target.getClass().getName());
+  }
 
   /**
    * Invokes a host member using raw slot windows.
@@ -244,7 +267,57 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param resultCapacity result-window capacity
    * @return number of result slots written
    */
-  protected abstract int invoke(Object target, long memberNamePtr, long args, int argCount, long results, int resultCapacity);
+  protected int invoke(Object target, long memberNamePtr, long args, int argCount,
+                       long results, int resultCapacity) {
+    if (target instanceof HostAccess host) {
+      Args callback = hostArgs(memberName(memberNamePtr), args, argCount, results, resultCapacity);
+      host.elx_handle(Metamethod.CALL, callback);
+      return callback.returnedCount();
+    }
+    throw new UnsupportedOperationException("Host object does not implement HostAccess: " + target.getClass().getName());
+  }
+
+  /**
+   * Dispatches a non-index metamethod on a host object.
+   *
+   * @param ptr external object handle
+   * @param method metamethod requested by the VM
+   * @param args argument-window base address
+   * @param count number of input slots
+   * @param results result-window base address
+   * @param capacity result-window capacity
+   * @return number of values appended by the host callback
+   */
+  public final int nmeta(long ptr, Metamethod method, long args, int count, long results, int capacity) {
+    Object target = object(entry(ptr));
+    if (target instanceof HostAccess host) {
+      Args callback = hostArgs(null, args, count, results, capacity);
+      host.elx_handle(method, callback);
+      return callback.returnedCount();
+    }
+    throw new UnsupportedOperationException("Host object does not implement HostAccess: "
+        + target.getClass().getName());
+  }
+
+  /**
+   * Attaches the VM that owns this heap's borrowed callback windows.
+   *
+   * @param vm the vm
+   */
+  public final void attach(VM vm) {
+    if (this.vm != null && this.vm != vm) {
+      throw new IllegalStateException("External heap is already attached to a VM");
+    }
+    this.vm = vm;
+  }
+
+  private Args hostArgs(@Nullable String memberName, long inputs, int count, long outputs, int capacity) {
+    VM machine = vm;
+    if (machine == null) {
+      throw new IllegalStateException("External heap is not attached to a VM");
+    }
+    return Args.host(machine, memberName, inputs, count, outputs, capacity);
+  }
 
   /**
    * Visits ELX references retained by a host resource.
@@ -256,6 +329,9 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param visitor callback for each retained ELX reference
    */
   protected void traceObject(Object target, HeapVisitor visitor) {
+    if (target instanceof HostAccess host) {
+      host.elx_trace(visitor);
+    }
   }
 
   /**
@@ -267,6 +343,9 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param target host resource being disposed
    */
   protected void disposeObject(Object target) {
+    if (target instanceof HostAccess host) {
+      host.elx_handle(Metamethod.GC, hostArgs(null, 0, 0, 0, 0));
+    }
   }
 
   private Object object(int index) {
@@ -351,6 +430,10 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Converts one slot value to a Java host value at the explicit boundary.
    *
+   * <p>{@link Type#NULL} exports directly as Java {@code null}. External handles
+   * export through {@link #exportJava(long)}, which may also read a nullable host
+   * field. A null language value requires no external handle allocation.
+   *
    * @param address source slot
    * @return exported Java value, possibly {@code null}
    * @throws IllegalArgumentException if the slot contains an unsupported type
@@ -388,6 +471,11 @@ public abstract class ExtHeap extends ManagedHeap<@Nullable Object> {
 
   /**
    * Converts a Java value into one VM slot, allocating external/string handles as needed.
+   *
+   * <p>Java {@code null} writes {@link Type#NULL} with a zero payload. Boxed
+   * primitives and strings use their corresponding ELX types. Remaining non-null
+   * objects are registered as {@link Type#EXTERNAL} handles. Importing null never
+   * calls {@link #add(Object)}.
    *
    * @param destination destination slot
    * @param value Java value, or {@code null}

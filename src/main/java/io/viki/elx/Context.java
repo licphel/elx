@@ -24,8 +24,9 @@
 
 package io.viki.elx;
 
+import io.viki.elx.asm.Prototype;
 import io.viki.elx.memory.*;
-import io.viki.elx.memory.*;
+import org.jspecify.annotations.Nullable;
 import io.viki.elx.vm.VM;
 
 import java.util.Objects;
@@ -34,12 +35,14 @@ import java.util.Objects;
  * Owns one complete ELX runtime instance and exposes its host-facing execution boundary.
  *
  * <p>A context wires together the VM, managed heap, register storage, and optional host-object
- * heap. Values remain valid only while their context and the corresponding {@link Pin} are alive;
- * callers use {@link #pin(String)} when Java code must retain a value across VM calls or garbage
- * collection. The context is thread-confined and must be closed after the last VM operation.
+ * heap. Heap-backed views depend on their context and corresponding {@link Pin} remaining alive.
+ * Callers use {@link #execute(Prototype)} to retain returned values and {@link #pin(String)}
+ * to retain globals across VM calls or garbage collection. Close results and independently
+ * acquired pins after use, and close the thread-confined context after the last VM operation.
  *
  * @see VM
  * @see Pin
+ * @see HostAccess
  * @see ExternalHeapFactory
  */
 public final class Context implements AutoCloseable {
@@ -52,7 +55,7 @@ public final class Context implements AutoCloseable {
   private boolean closed;
 
   private Context() {
-    this(EmptyExtHeap::new);
+    this(DefaultExtHeap::new);
   }
 
   private Context(ExternalHeapFactory factory) {
@@ -65,7 +68,7 @@ public final class Context implements AutoCloseable {
   }
 
   /**
-   * Creates a context with the built-in runtime and no host-object adapters.
+   * Creates a context with the built-in runtime and automatic {@link HostAccess} dispatch.
    *
    * @return a new thread-confined ELX context
    */
@@ -74,9 +77,9 @@ public final class Context implements AutoCloseable {
   }
 
   /**
-   * Creates a context with a caller-supplied host-object adapter.
+   * Creates a context with a caller-supplied low-level external heap.
    *
-   * @param factory factory that creates the context's external-object heap
+   * @param factory factory that creates the context's low-level external-object heap
    * @return a new thread-confined ELX context
    * @throws NullPointerException if {@code factory} is {@code null}
    */
@@ -100,54 +103,108 @@ public final class Context implements AutoCloseable {
    *
    * <p>Managed references remain rooted until the returned pin is closed. Primitive values are
    * copied into an independent pin, while external values are retained by the configured
-   * {@link ExternalHeapFactory}.
+   * {@link ExternalHeapFactory}. A missing global or a global containing ELX {@code null}
+   * produces a primitive pin whose {@link Pin#get()} returns Java {@code null}.
    *
    * @param name global name to resolve
    * @param <T> Java type expected by the caller
-   * @return a pin representing the global value
+   * @return a non-null pin representing the global value, which may itself be null
    * @throws IllegalStateException if this context has been closed
-   * @throws IllegalArgumentException if the global name is unknown
    */
-  @SuppressWarnings("unchecked")
-  public <T> Pin<T> pin(String name) {
+  public <T extends @Nullable Object> Pin<T> pin(String name) {
     ensureOpen();
     long slot = arena.allocate(Slot.SIZE);
     try {
       vm.getGlobal(name, slot);
-      Type type = Slot.type(memory, slot);
-      long bits = Slot.bits(memory, slot);
-      if (type == Type.EXTERNAL) {
-        return (Pin<T>) external.pin(bits, PinMode.STRONG);
-      }
-      if (Type.isManagedReference(type)) {
-        Pin.Heap<Long> rooted = heap.pin(bits, PinMode.STRONG);
-        return new Pin<>() {
-          @Override
-          public T get() {
-            Long address = rooted.get();
-            return (T) (type == Type.STRING ? heap.exportString(address) : address);
-          }
-
-          @Override
-          public boolean isPrimitive() {
-            return false;
-          }
-
-          @Override
-          public boolean isAlive() {
-            return rooted.isAlive();
-          }
-
-          @Override
-          public void close() {
-            rooted.close();
-          }
-        };
-      }
-      return new Pin.Primitive<>((T) external.exportValue(slot));
+      return pinSlot(slot);
     } finally {
       arena.free(slot);
     }
+  }
+
+  /**
+   * Executes a compiled script and owns a snapshot of its returned values.
+   *
+   * <p>The snapshot survives subsequent executions and garbage collection until it is closed.
+   * Each {@link Results#get(int)} call acquires a separate pin that the caller also closes.
+   * Execution failure propagates to the caller before a results object is created.
+   *
+   * @param image compiled script or zero-argument function
+   * @return caller-owned results, possibly containing zero values
+   * @throws IllegalStateException if the context is closed or execution fails
+   */
+  public Results execute(Prototype image) {
+    ensureOpen();
+    return new Results(this, vm.execute(image));
+  }
+
+  /**
+   * Executes a compiled function with arguments in a contiguous VM slot window.
+   *
+   * <p>Arguments are borrowed for this invocation. The caller retains ownership of their
+   * storage. Returned results have the same independent lifetime as {@link #execute(Prototype)}.
+   *
+   * @param image compiled function
+   * @param args address of the first input slot, or zero when {@code count} is zero
+   * @param count number of input slots
+   * @return caller-owned snapshot of the returned values
+   * @throws IllegalArgumentException if the function rejects the supplied arguments
+   * @throws IllegalStateException if the context is closed or execution fails
+   */
+  public Results execute(Prototype image, long args, int count) {
+    ensureOpen();
+    return new Results(this, vm.execute(image, args, count));
+  }
+
+  /**
+   * Executes a loaded function in this context and retains its returned values.
+   *
+   * @param function live function handle belonging to this context's VM
+   * @param args address of the first input slot, or zero when {@code count} is zero
+   * @param count number of input slots
+   * @return caller-owned snapshot of the returned values
+   * @throws IllegalArgumentException if the handle or supplied arguments are invalid
+   * @throws IllegalStateException if the context is closed or execution fails
+   */
+  public Results execute(long function, long args, int count) {
+    ensureOpen();
+    return new Results(this, vm.execute(function, args, count));
+  }
+
+  @SuppressWarnings("all")
+  <T extends @Nullable Object> Pin<T> pinSlot(long slot) {
+    ensureOpen();
+    Type type = Slot.type(memory, slot);
+    long bits = Slot.bits(memory, slot);
+    if (type == Type.EXTERNAL) {
+      return (Pin<T>) external.pin(bits, PinMode.STRONG);
+    }
+    if (Type.isManagedReference(type)) {
+      Pin.Heap<Long> rooted = heap.pin(bits, PinMode.STRONG);
+      return new Pin<>() {
+        @Override
+        public T get() {
+          long address = rooted.address();
+          return (T) (type == Type.STRING ? heap.exportString(address) : Long.valueOf(address));
+        }
+
+        @Override
+        public boolean isPrimitive() {
+          return false;
+        }
+
+        @Override
+        public boolean isAlive() {
+          return rooted.isAlive();
+        }
+
+        @Override
+        public void close() {
+          rooted.close();
+        }
+      };
+    }
+    return new Pin.Primitive<>((T) external.exportValue(slot));
   }
 
   private void ensureOpen() {
@@ -170,7 +227,8 @@ public final class Context implements AutoCloseable {
   }
 
   /**
-   * Creates the host-object heap used for values of {@link Type#EXTERNAL}.
+   * Creates the low-level host-object heap used for values of {@link Type#EXTERNAL}.
+   * Ordinary Java objects should implement {@link HostAccess} and use {@link #open()}.
    */
   @FunctionalInterface
   public interface ExternalHeapFactory {
@@ -183,25 +241,9 @@ public final class Context implements AutoCloseable {
     ExtHeap create(ElxHeap internal);
   }
 
-  private static final class EmptyExtHeap extends ExtHeap {
-    private EmptyExtHeap(ElxHeap internal) {
+  private static final class DefaultExtHeap extends ExtHeap {
+    private DefaultExtHeap(ElxHeap internal) {
       super(internal);
-    }
-
-    @Override
-    protected void readField(Object target, long memberNamePtr, long result) {
-      throw new UnsupportedOperationException("No host-object adapter is installed");
-    }
-
-    @Override
-    protected void writeField(Object target, long memberNamePtr, long value) {
-      throw new UnsupportedOperationException("No host-object adapter is installed");
-    }
-
-    @Override
-    protected int invoke(Object target, long memberNamePtr, long args, int argCount,
-                         long results, int resultCapacity) {
-      throw new UnsupportedOperationException("No host-object adapter is installed");
     }
   }
 }

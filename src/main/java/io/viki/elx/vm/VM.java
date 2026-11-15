@@ -88,6 +88,7 @@ public final class VM implements AutoCloseable {
   public VM(ElxHeap heap, ExtHeap external, JavaRegs regs) {
     this.heap = heap;
     this.external = external;
+    external.attach(this);
     this.regs = regs;
     this.memory = heap.memory();
     this.arena = heap.arena();
@@ -359,6 +360,18 @@ public final class VM implements AutoCloseable {
   private String format(long value, Set<Long> path) {
     Type type = Slot.type(memory, value);
     long bits = Slot.bits(memory, value);
+    if (type == Type.EXTERNAL) {
+      long result = arena.allocate(Slot.SIZE);
+      try {
+        safePoint();
+        int returned = external.nmeta(bits, Metamethod.STR, 0, 0, result, 1);
+        if (returned == 1 && Slot.type(memory, result) == Type.STRING) {
+          return heap.exportString(Slot.bits(memory, result));
+        }
+      } finally {
+        arena.free(result);
+      }
+    }
     if (type != Type.TABLE && type != Type.LIST) {
       return ValueText.string(memory, value);
     }
@@ -1230,6 +1243,14 @@ public final class VM implements AutoCloseable {
       long args = hookArguments(1);
       Slot.copy(memory, args, b, 1);
       invokeHook(hook, a, 1, 1, Type.BOOL.ordinal());
+    } else if (target == Type.BOOL && Slot.type(memory, b) == Type.EXTERNAL) {
+      long args = hookArguments(1);
+      Slot.copy(memory, args, b, 1);
+      safePoint();
+      int returned = external.nmeta(Slot.bits(memory, b), Metamethod.BOOL, args, 1, a, 1);
+      if (returned != 1 || Slot.type(memory, a) != Type.BOOL) {
+        throw new IllegalArgumentException("External bool metamethod must return one BOOL");
+      }
     } else {
       Slot.write(memory, a, target, Type.cast(Slot.bits(memory, b), Slot.type(memory, b), target));
     }
@@ -1675,6 +1696,29 @@ public final class VM implements AutoCloseable {
     if (method < 0) {
       return false;
     }
+    Type leftType = Slot.type(memory, left), rightType = Slot.type(memory, right);
+    if (leftType == Type.EXTERNAL || rightType == Type.EXTERNAL) {
+      long target = leftType == Type.EXTERNAL ? left : right;
+      Op op = Instr.op(control);
+      int count = op == Op.INEG || op == Op.FNEG || op == Op.BNOT || op == Op.CX_BOOL_NOT
+          || op == Op.CX_POS || op == Op.CX_INCR || op == Op.CX_DECR ? 1 : 2;
+      long args = hookArguments(count);
+      Slot.copy(memory, args, left, 1);
+      if (count == 2) {
+        Slot.copy(memory, args + Slot.SIZE, right, 1);
+      }
+      safePoint();
+      int returned = external.nmeta(Slot.bits(memory, target), Metamethod.at(method), args, count, result, 1);
+      if (returned != 1) {
+        throw new IllegalArgumentException("External metamethod " + Metamethod.at(method)
+            + " must return one value, got " + returned);
+      }
+      if (Metamethod.at(method).booleanResult() && Slot.type(memory, result) != Type.BOOL) {
+        throw new IllegalArgumentException("External metamethod " + Metamethod.at(method)
+            + " must return BOOL");
+      }
+      return true;
+    }
     long cell = Slot.type(memory, left) == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, left), method) : 0;
     if (cell == 0 && Slot.type(memory, right) == Type.TABLE) {
       cell = ElxTable.hook(memory, Slot.bits(memory, right), method);
@@ -1755,6 +1799,14 @@ public final class VM implements AutoCloseable {
       Slot.copy(memory, staged, function, 1);
       Slot.copy(memory, staged + Slot.SIZE, args, count);
       invokeHook(hook, destination, count + 1, capacity, -1);
+    } else if (Slot.type(memory, function) == Type.EXTERNAL) {
+      safePoint();
+      int returned = external.nmeta(Slot.bits(memory, function), Metamethod.CALL, args, count,
+          destination, capacity);
+      if (returned < 0 || returned > capacity) {
+        throw new IllegalStateException("External call returned an invalid result count: " + returned);
+      }
+      clearResults(destination, returned, capacity);
     } else {
       if (Slot.type(memory, function) != Type.FUNCTION) {
         throw new IllegalArgumentException("Not a function: " + Slot.type(memory, function));

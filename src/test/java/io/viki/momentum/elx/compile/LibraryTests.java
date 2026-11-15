@@ -28,8 +28,8 @@ public final class LibraryTests {
     SimpleLibrary definitions=new SimpleLibrary();
     definitions.constant("seed",Type.LONG,7).text("label","你好");
     definitions.function("add",compiler.compileFunction("function(a,b) { return a+b+seed }",definitions));
-    definitions.function("multiply",args->{args.returnLong(args.i(0)*args.i(1));});
-    definitions.function("bytes",args->{args.returnInt(args.memory().load32(args.bits(0)));});
+    definitions.function("multiply",args->{args.rl(args.i(0)*args.i(1));});
+    definitions.function("bytes",args->{args.ri(args.memory().load32(args.bits(0)));});
     SimpleLibrary dependent=new SimpleLibrary();dependent.function("forward",compiler.compileFunction("function(x) { return add(x,2) }",definitions));
     Prototype source=compiler.compile("local f=add;local callback=multiply;return f(2,3),callback(6,7),bytes(label)",definitions);
     for(boolean nativeMemory:new boolean[]{false,true}){
@@ -70,10 +70,10 @@ public final class LibraryTests {
       check(a.s(3).equals("你好"));
       check(ElxList.size(a.memory(),a.l(4))==2);
       check(ElxTable.size(a.memory(),a.t(5))==1);
-      a.returnLong(a.i(0)+1);
-      a.returnDouble(a.d(1)*2);
-      a.returnBoolean(a.b(2));
-      a.returnString(a.s(3)+"!");
+      a.rl(a.i(0)+1);
+      a.rd(a.d(1)*2);
+      a.rb(a.b(2));
+      a.rs(a.s(3)+"!");
     });
     vm.execute(compiler.compile("local a,b,c,d=typed(7,2.5,true,'你好',[1,2],{x=3}); return a,b,c,d",library));
     check(Slot.bits(memory,vm.results())==8);
@@ -94,17 +94,17 @@ public final class LibraryTests {
         check(a!=outer[0]);
         vm.collect(true);
       }
-      a.returnLong(n);
+      a.rl(n);
     });
     vm.execute(compiler.compile("return reenter(2)",library));
     check(Slot.bits(memory,vm.results())==2 && regs.depth()==0);
 
     library=new SimpleLibrary();
-    library.function("many", a -> { a.returnInt(1); a.returnInt(2); a.returnInt(3); a.returnInt(4); });
+    library.function("many", a -> { a.ri(1); a.ri(2); a.ri(3); a.ri(4); });
     vm.execute(compiler.compile("many(); local x=many(); return x",library));
     check(Slot.bits(memory,vm.results())==1);
     library=new SimpleLibrary();
-    library.function("echo", a -> { check(a.o(0).equals("hello")); a.returnObject(a.o(0)); });
+    library.function("echo", a -> { check(a.o(0).equals("hello")); a.ro(a.o(0)); });
     vm.execute(compiler.compile("return echo('hello')",library));
     check(vm.heap().exportString(Slot.bits(memory,vm.results())).equals("hello"));
 

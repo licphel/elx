@@ -221,7 +221,7 @@ public final class RuntimeLibrary {
       args.returnCount(1);
     });
     library.function("length", args -> {
-      args.returnInt(ValueOperations.length(args.memory(), args.slot(0)));
+      args.ri(ValueOperations.length(args.memory(), args.slot(0)));
     });
     library.function("index.get", args -> {
       Memory m = args.memory();

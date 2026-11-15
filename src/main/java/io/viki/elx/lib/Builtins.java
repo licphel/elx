@@ -106,7 +106,7 @@ public final class Builtins {
         args -> args.vm().output().accept(args.join("\t") + '\n'));
     library.function("str", args -> {
       args.arity(1);
-      args.returnString(args.format(0));
+      args.rs(args.format(0));
     });
     library.function("assert", args -> {
       if (args.size() < 1 || args.size() > 2 || args.typeof(0) != Type.BOOL) {
@@ -128,13 +128,13 @@ public final class Builtins {
       }
       try {
         int returned = args.vm().execute(args.bits(0), 0, 0);
-        args.returnBoolean(true);
+        args.rb(true);
         returnResults(args, returned, 1);
       } catch (RuntimeException failure) {
         long error = errorTable(args, failure);
         args.heap().retain(error);
         try {
-          args.returnBoolean(false);
+        args.rb(false);
           args.returnValue(Type.TABLE, error);
         } finally {
           args.heap().release(error);
