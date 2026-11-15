@@ -167,6 +167,7 @@ public final class CompilerTests {
     for(Token token:expected)check(scan.next().kind()==token);
     Tokenizer identifiers=new Tokenizer("if#x _end λ");for(int i=0;i<3;i++)check(identifiers.next().kind()==Token.IDENTIFIER);
     check(identifiers.next().kind()==Token.EOF);
+    check(new Tokenizer("env").next().kind()==Token.ENV);
     try{COMPILER.compile("local x=1\r\n\r\nreturn @");throw new AssertionError("Missing diagnostic");}
     catch(SyntaxException error){check(error.span().line()==3);check(error.span().column()==8);}
   }
@@ -177,7 +178,7 @@ public final class CompilerTests {
       "return false||1", "return 2147483648",
       "return 256b", "return -32769s", "return 18446744073709551616ul", "return 1e999", "return 1e",
       "return 1.0u", "return b'102", "return 1'", "return 'open", "/* open", "return '\\q'", "return '\\u123'",
-      "return 1,2,3,4,5", "return 1 ? 2", 
+      "return 1,2,3,4,5", "return 1 ? 2",
       "local x=1; x+=", "} else { }", "for i=0, true, i+=1 {", "return (1+2", "return true && null"
     };
     for(String source:invalid)failure(SyntaxException.class,()->COMPILER.compile(source));

@@ -83,6 +83,7 @@ public final class CapabilitiesTests {
         fails(r,"return require('test:cycle')","Circular require");
         expect(r,"local math=require('math');return long(math.pow(2,8)),long(math.floor(2.9))",256,2);
         expect(r,"local sys=require('sys');sys.env.hello=17;return hello,sys.remove(sys.env,'hello'),sys.env.hello==null",17,1,1);
+        expect(r,"env.answer=41;env.answer+=1;return env.answer,answer",42,42);
         expect(r,"local util=require('util');return util.base64_decode(util.base64_encode('hello'))=='hello'",1);
         expect(r,"local str=require('str');return len('a中'),str.bytelen('a中'),str.upper('ab')=='AB'",2,4,1);
         StringBuilder output=new StringBuilder();r.vm.output(output::append);

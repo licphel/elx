@@ -334,7 +334,10 @@ public final class Compiler {
     }
 
     private Token.Span memberName() {
-      return kind() == Token.PRINT ? lexer.advance() : lexer.require(Token.IDENTIFIER);
+      return switch (kind()) {
+        case PRINT, ENV -> lexer.advance();
+        default -> lexer.require(Token.IDENTIFIER);
+      };
     }
 
     private int reserve(int count) {
@@ -1371,6 +1374,12 @@ public final class Compiler {
         case NULL -> {
           lexer.advance();
           return literal(Type.NULL, 0);
+        }
+        case ENV -> {
+          lexer.advance();
+          int at = temporary();
+          code.r(Op.CX_ENV, at, 0, 0);
+          return new Expr(at, Type.TABLE);
         }
         case STRING -> {
           return string(lexer.string());

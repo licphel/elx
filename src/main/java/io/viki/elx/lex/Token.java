@@ -112,6 +112,7 @@ public enum Token {
   TRUE("true", true, true),
   FALSE("false", true, true),
   NULL("null", true, true),
+  ENV("env", true, true),
   PRINT("print", true, true),
   EOF("<eof>", false),
   ERROR("<error>", false);
