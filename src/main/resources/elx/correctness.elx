@@ -156,12 +156,6 @@ print("== sys ==");
 // identity returns a long payload for a value
 assert(type(sys.identity(42)) == "long", "sys.identity type");
 
-// remove on a table
-local t = {a = 1, b = 2};
-assert(sys.remove(t, "a"), "sys.remove existing");
-assert(!sys.remove(t, "a"), "sys.remove missing");
-assert(len(t) == 1, "sys.remove shrinks table");
-
 // unload a missing module is a no-op
 sys.unload("does.not.exist");
 
@@ -490,16 +484,20 @@ assert(inverted[1] == "a" && inverted[2] == "b", "invert");
 // ------------------------------------------------------------
 print("table access");
 
-local access = {a = 1, b = null};
+local access = {a = 1, b = null, c = void};
 assert(table.has(access, "a"), "has existing");
-assert(table.has(access, "b"), "has null value");
+assert(table.has(access, "b"), "has key with null value");
+assert(table.has(access, "c"), "has key with void value");
 assert(!table.has(access, "z"), "has missing");
+assert(table.remove(access, "a"), "remove existing");
+assert(!table.remove(access, "a"), "remove missing");
+assert(!table.has(access, "a"), "remove clears key");
 
-assert(table.get(access, "a") == 1, "get existing");
+assert(table.get(access, "b") == null, "get explicit null");
 assert(table.get(access, "z", 42) == 42, "get default");
 assert(table.get(access, "z") == void, "get missing null");
 
-assert(table.size(access) == 2, "table size");
+assert(table.size(access) == 2, "table size after remove");
 assert(!table.isEmpty(access), "table non-empty");
 
 local emptyTable = {};

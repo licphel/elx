@@ -73,7 +73,7 @@ assert(sys.env['_hidden_test']==7);
 assert(referenceequal(sys,require('sys')));
 require('gc').collect();
 assert(sys.env.macro_global==43);
-assert(sys.remove(sys.env,'macro_global'));
+assert(require('table').remove(sys.env,'macro_global'));
 assert(macro_global==void);
 assert(FILENAME=='macros.elx');
 return true;

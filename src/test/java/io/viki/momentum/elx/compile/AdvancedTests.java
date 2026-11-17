@@ -136,7 +136,7 @@ public final class AdvancedTests {
       for(int i=0;i<binary.length;i++)expect(vm,"local t={};setmetatable(t,{['"+binaryHooks[i]+"']=function(a,b){return 17 }});return t"+binary[i]+"2",17);
       String[] comparisons={"<","<=",">",">=","==","!="},comparisonHooks={"lt","le","gt","ge","eq","ne"};
       for(int i=0;i<comparisons.length;i++)expect(vm,"local t={};setmetatable(t,{['"+comparisonHooks[i]+"']=function(a,b){return false }});return t"+comparisons[i]+"2",0);
-      String[] unary={"+","-","~"},unaryHooks={"pos","neg","invert"};
+      String[] unary={"+","-","~"},unaryHooks={"pos","neg","inv"};
       for(int i=0;i<unary.length;i++)expect(vm,"local t={};setmetatable(t,{['"+unaryHooks[i]+"']=function(a){return 7 }});return "+unary[i]+"t",7);
       expect(vm,"local t={};setmetatable(t,{['not']=function(a) {return true },bool=function(a) {return false }});return !t,bool(t)",1,0);
       expect(vm,"local t={};setmetatable(t,{['inc']=function(a) {return 12 }});local old=t++;return t,old==getrawattr({},'none')",12,0);

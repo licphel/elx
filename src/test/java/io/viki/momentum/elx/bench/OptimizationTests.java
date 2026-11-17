@@ -44,7 +44,7 @@ public final class OptimizationTests {
       "local n=0;local t={};setmetatable(t,{call=function(self,a,b=2) {return a+b }});return t(a=3)",
       "local s='a'+'b';return s,referenceequal(s,'ab'),str(0.1)+'!',str(18446744073709551615ul)",
       "local a=[1,2];local b=[2,3];return len(a+b),len(a-b),len(a^b),len(a&b)",
-      "global_count=2;local sys=require('sys');sys.env.global_count+=3;return global_count,sys.remove(sys.env,'global_count')",
+      "global_count=2;local sys=require('sys');sys.env.global_count+=3;return global_count,require('table').remove(sys.env,'global_count')",
       "local strlib=require('str');return strlib.toLower('ΟΣ'),strlib.toUpper('ß'),strlib.sub('a中😀z',1,3)",
       "local m=require('math');local x=m.sqrt(-1.0);return x==x,x!=x,-0.0,1.0/-0.0",
       "local a=32767s;local b=1s;return short(a+b),bool(2),~true,18446744073709551615ul>0ul",

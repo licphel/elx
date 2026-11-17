@@ -26,7 +26,7 @@ public enum Metamethod {
   USHR,
   POS,
   NEG,
-  INVERT,
+  INV,
   NOT,
   BOOL,
   EQ,
@@ -90,7 +90,7 @@ public enum Metamethod {
       case USHR -> USHR.ordinal();
       case POS -> POS.ordinal();
       case NEG -> NEG.ordinal();
-      case BNOT -> INVERT.ordinal();
+      case BNOT -> INV.ordinal();
       case NOT -> NOT.ordinal();
       case INC -> INC.ordinal();
       case DEC -> DEC.ordinal();

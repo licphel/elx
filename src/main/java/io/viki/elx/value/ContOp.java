@@ -101,6 +101,17 @@ public interface ContOp {
   boolean tableGet(Span values, int tableIndex, Span keys, int keyIndex, Span destination, int destinationIndex);
 
   /**
+   * Tests whether a table contains a key without reading its value.
+   *
+   * @param values span containing the table
+   * @param tableIndex table slot index
+   * @param keys span containing the key
+   * @param keyIndex key slot index
+   * @return {@code true} when the key is present, including when its value is null or void
+   */
+  boolean tableContains(Span values, int tableIndex, Span keys, int keyIndex);
+
+  /**
    * Replaces or inserts a table entry without invoking SET.
    *
    * @param values      span containing the table

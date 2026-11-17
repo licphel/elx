@@ -80,8 +80,7 @@ public final class NTableStd {
   private static void has(Call call) {
     call.arity(2);
     requireTable(call, 0);
-    Span ignored = call.scratch(1);
-    call.rb(call.containers().tableGet(call, 0, call, 1, ignored, 0));
+    call.rb(call.containers().tableContains(call, 0, call, 1));
   }
 
   private static void collect(Call call, boolean values) {

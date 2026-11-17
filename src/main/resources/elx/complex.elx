@@ -172,7 +172,7 @@ gc.collect();
 local localAlive = pcall(function() { return (*danglingLocal).value },captureError);
 check(!localAlive,'managed reference to a returned stack frame cannot be dereferenced');
 
-sys.remove(sys.env,'globalRemoved');
+require('table').remove(sys.env,'globalRemoved');
 gc.collect();
 local globalAlive, removedValue = pcall(function() { return (*removedPointer).value },captureError);
 print(globalAlive+": " +removedValue);

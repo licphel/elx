@@ -99,6 +99,12 @@ final class Containers implements ContOp {
   }
 
   @Override
+  public boolean tableContains(Span values, int index, Span keys, int key) {
+    same(keys);
+    return ElxTable.own(memory, container(values, index, Type.TABLE), Slots.address(keys, key)) != 0;
+  }
+
+  @Override
   public void tableSet(Span values, int index, Span keys, int key, Span source, int at) {
     same(keys);
     same(source);

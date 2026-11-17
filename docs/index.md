@@ -258,7 +258,7 @@ A list literal is a sequence in brackets, such as `[10, 20, 30]`. A table litera
 
 Lists use zero-based integer indices. Reading or replacing an element requires an index in `0` through `len(list)-1`. Assigning at `len(list)` appends one element. Other indices raise an error. Elements can hold different types, including `null` and `void`.
 
-Tables store key/value pairs. `table.field` is shorthand for `table['field']`. A missing key reads as `void`; `table.has` distinguishes an absent key from an entry whose value is `void` or `null`. `sys.remove(table, key)` removes the entry. `len(table)` counts occupied entries. NaN is rejected as a key.
+Tables store key/value pairs. `table.field` is shorthand for `table['field']`. A missing key reads as `void`; `table.has(table, key)` checks key presence directly, so an entry whose value is `void` or `null` still exists. `table.remove(table, key)` removes the entry and returns whether it was present. `len(table)` counts occupied entries. NaN is rejected as a key.
 
 ### Container operators
 
@@ -278,7 +278,7 @@ List membership uses value equality. These operations preserve qualifying occurr
 
 A metatable is a table containing functions that customize another table's behavior. `setmetatable(value, meta)` attaches it, and `getmetatable(value)` retrieves it. Multiple values can use the same metatable.
 
-Metamethods are table fields named with lowercase words. For example, arithmetic uses `add` and `sub`; symbolic operator spellings such as `+` are not hook keys. The complete set is `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `invert`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`.
+Metamethods are table fields named with lowercase words. For example, arithmetic uses `add` and `sub`; symbolic operator spellings such as `+` are not hook keys. The complete set is `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `inv`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`.
 
 Arithmetic and comparison hooks receive operands in source order. Unary hooks receive one operand; unary plus uses `pos` and unary minus uses `neg`. Comparison and boolean-conversion hooks return a boolean. `get` receives the table and key, while `set` receives the table, key, and assigned value. `call` receives the table followed by explicit arguments. `str` formats a value, `gc` handles collection of an external object, and `hash` implements the explicit semantic hash operation.
 
@@ -326,11 +326,11 @@ Standard modules are ELX scripts under `/std/`. Each declares its host primitive
 | Module | Exports |
 |--------|---------|
 | `list` | `copy`, `deepCopy`, `sort`, `reverse`, `insert`, `removeAt`, `remove`, `pop`, `push`, `clear`, `slice`, `concat`, `append`, `prepend`, `indexOf`, `lastIndexOf`, `contains`, `count`, `unique`, `flatten`, `zip`, `chunk`, `swap`, `fill`, `equals`, `isEmpty`, `size`, `empty`, `repeat`, `range`, `sum`, `min`, `max`. |
-| `table` | `create`, `get`, `set`, `remove`, `has`, `keys`, `values`, `entries`, `merge`, `mergeInto`, `clear`, `clone`, `invert`, `size`, `isEmpty`. |
+| `table` | `create`, `get`, `set`, `remove`, `has`, `keys`, `values`, `entries`, `merge`, `mergeInto`, `clear`, `clone`, `inv`, `size`, `isEmpty`. |
 | `math` | `abs`, `sqrt`, `floor`, `ceil`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `log`, `exp`, `to_degrees`, `to_radians`, `pow`, `fmod`, `modf`, `min`, `max`, `pi`, `inf`. |
 | `str` | `charAt`, `codeAt`, `fromCode`, `toUpper`, `toLower`, `sub`, `trim`, `trimStart`, `trimEnd`, `contains`, `containsIgnoreCase`, `startsWith`, `endsWith`, `index`, `lastIndex`, `isSameIgnoreCase`, `replace`, `split`, `join`, `repeat`, `padStart`, `padEnd`, `format`. |
 | `io` | `print`, `readText`, `writeText`, `appendText`, `exists`, `delete`, `listDir`. |
-| `sys` | `env`, `unload`, `remove`, `identity`. `env` is the same table exposed by the `env` keyword. |
+| `sys` | `env`, `unload`, `identity`. `env` is the same table exposed by the `env` keyword. |
 | `gc` | `collect`, `pin`, `unpin`. |
 | `util` | `encodeBase64`, `decodeBase64`, `time`, `date`, `genUuid`. |
 | `random` | `seed`, `rand`, `randl`, `randf`, `randd`, `randb`. |
@@ -354,7 +354,7 @@ All unary `math` functions return `double`, including `floor`, `ceil`, and `abs`
 
 `io.print(values...)` separates values with `, ` and appends a newline, matching the global `print`. Text files use UTF-8. `readText(path)` returns the full file, `writeText(path, text)` creates or replaces its contents, `appendText(path, text)` appends to a file, and `exists(path)` returns a boolean. `listDir(path)` returns entry names. Relative paths use the Java process working directory. File errors propagate as unchecked I/O exceptions.
 
-`sys.env` is the VM's global table. `sys.remove(table, key)` returns whether an entry was removed. `sys.identity(value)` returns its raw payload as a `long`, which is useful for runtime diagnostics. Its handle values belong to the current runtime instance.
+`sys.env` is the VM's global table. `sys.identity(value)` returns its raw payload as a `long`, which is useful for runtime diagnostics. Its handle values belong to the current runtime instance. Table mutation and membership operations are provided by the `table` module.
 
 `gc.collect()` requests a pressure collection. `gc.pin(pointer)` strongly retains a live non-stack pointer and returns that pointer. `gc.unpin(pointer)` releases one such retention. Pair these calls when retaining script pointers explicitly.
 

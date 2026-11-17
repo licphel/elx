@@ -62,15 +62,15 @@ Applications using the low-level `VM(ElxHeap, ExtHeap, JavaRegs)` constructor ow
 
 `Compiler.compile(source)` returns a script `Prototype` using the default O1 optimizer. Compilation creates code and metadata, and execution instantiates the script's values in a particular VM. Reuse a prototype for repeated execution instead of recompiling the same source for each call.
 
-| Entry point                                    | Use                                                                            |
-|------------------------------------------------|--------------------------------------------------------------------------------|
-| `compile(source)`                              | Compile source with built-ins and an empty application library.                |
-| `compile(source, library)`                     | Also resolve names from an application library.                                |
-| `compile(sourceName, source, library)`         | Retain a meaningful file or resource name for diagnostics.                     |
-| `compile(sourceName, source, library, level)`  | Request an optimization level; currently only O1 is implemented.                |
-| `compileFunction(source, library)`             | Compile a single function expression for direct invocation.                    |
-| `compileRaw(sourceName, source, library)`      | Inspect the compiler's direct instruction output.                              |
-| `compileInternal(sourceName, source, library)` | Compile optimized host-generated glue that may use underscore-prefixed names.  |
+| Entry point                                    | Use                                                                           |
+|------------------------------------------------|-------------------------------------------------------------------------------|
+| `compile(source)`                              | Compile source with built-ins and an empty application library.               |
+| `compile(source, library)`                     | Also resolve names from an application library.                               |
+| `compile(sourceName, source, library)`         | Retain a meaningful file or resource name for diagnostics.                    |
+| `compile(sourceName, source, library, level)`  | Request an optimization level; currently only O1 is implemented.              |
+| `compileFunction(source, library)`             | Compile a single function expression for direct invocation.                   |
+| `compileRaw(sourceName, source, library)`      | Inspect the compiler's direct instruction output.                             |
+| `compileInternal(sourceName, source, library)` | Compile optimized host-generated glue that may use underscore-prefixed names. |
 
 A prototype carries instructions, constants, nested function prototypes, signature information, and source locations. It can be loaded into multiple VMs. Each VM gives loaded code its own handles and addresses.
 
@@ -84,12 +84,12 @@ The VM and host-library paths share one semantic facade, `ValueOperations`. Its 
 
 `Context.execute(image)` returns a caller-owned `Results` object. Its indexed values are a snapshot of that invocation's return slots, retained independently of the VM's temporary return window. Later execution and collection leave those slots available until the results object is closed.
 
-| Method        | Behavior                                                                                         |
-|---------------|--------------------------------------------------------------------------------------------------|
+| Method        | Behavior                                                                                            |
+|---------------|-----------------------------------------------------------------------------------------------------|
 | `size()`      | Return the captured number of values, from zero through sixteen. Available after close as metadata. |
-| `type(index)` | Read the captured ELX type at a zero-based index.                                                |
-| `get(index)`  | Acquire a new, independently owned `Pin<T>` for that value.                                      |
-| `close()`     | Release the snapshot's roots. Repeated calls are harmless.                                       |
+| `type(index)` | Read the captured ELX type at a zero-based index.                                                   |
+| `get(index)`  | Acquire a new, independently owned `Pin<T>` for that value.                                         |
+| `close()`     | Release the snapshot's roots. Repeated calls are harmless.                                          |
 
 A bare `return` has size zero. `return null` has size one and type `Type.NULL`; a returned `void` has type `Type.VOID`. Reading an index outside `0` through `size()-1` raises `IndexOutOfBoundsException`. Indexed access after closing results or their context raises `IllegalStateException`.
 
@@ -111,7 +111,7 @@ A result snapshot retains all of its returned managed values. Each pin acquired 
 | Managed or external `Pin<T>` | Its allocation remains strongly pinned until that pin closes or its context closes. |
 | `Pin.Primitive<T>`           | An independently copied Java value. Closing it has no effect on its contents.       |
 | `VM.results()`               | Borrowed slot window, overwritten by the next invocation at the same depth.         |
-| Callback `Call` and `Span`   | Borrowed inputs, rooted scratch slots, and results for that callback invocation.     |
+| Callback `Call` and `Span`   | Borrowed inputs, rooted scratch slots, and results for that callback invocation.    |
 
 `Pin.get()` exports the current representation. `isAlive()` checks the pin's liveness, `isPrimitive()` identifies independently copied values, and `close()` releases the hold. `unpin()` is an alias for `close()`.
 
@@ -150,7 +150,7 @@ A callback can use `Call.ro(null)` to return an explicit ELX null and `Call.o(in
 
 ## Globals and arguments
 
-The script's `env` keyword and `VM.globals()` refer to the same global table. `VM.setGlobal(name, slot)` copies a value into that table, and `getGlobal(name, destination)` copies it into a supplied slot. `Context.pin(name)` directly acquires a pin for a global when Java needs to inspect or retain it.
+The script's `env` keyword and `VM.globals()` refer to the same global table. `VM.setGlobal(name, slot)` copies a value into that table, and `getGlobal(name, destination)` copies it into a supplied slot. `Context.pin(name)` directly acquires a pin for a global when Java needs to inspect or retain it. Script table mutation and membership use `table.remove(t, key)` and `table.has(t, key)`.
 
 For writing globals or passing low-level arguments, allocate temporary slot storage from `vm.heap().arena()`. Import Java values with `vm.external().importJava(slot, value)`, then pass the slots to the chosen VM or context operation. Release the temporary storage with `arena.free(address)` in a `finally` block.
 
@@ -188,7 +188,7 @@ A callback can synchronously call `context.execute(...)` again. Each invocation 
 
 Implement `HostAccess` on a Java object and pass it through `Span.setObject` or the external heap's `importJava`. The default `ExtHeap` sends every operation through `elx_handle(Metamethod, Call)`. The arguments use a canonical indexed layout instead of a separate member-name channel: GET receives `self, key`; SET receives `self, key, value`; CALL receives `self` followed by explicit arguments. Unary operations receive their operand, binary operations receive left and right in source order, and STR, BOOL, and GC receive `self`.
 
-`Metamethod` covers arithmetic, comparisons, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. ELX table metatables use the lowercase names `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `invert`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. The default handler is empty, so an adapter implements only the behavior it owns. A result-producing handler appends a value through `Call`. An empty scalar-result hook means that the operation is unavailable; appending an explicit `null` counts as a handled result. SET, INIT, and GC hooks may complete without results. `hash` must append exactly one integer value.
+`Metamethod` covers arithmetic, comparisons, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. ELX table metatables use the lowercase names `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `inv`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. The default handler is empty, so an adapter implements only the behavior it owns. A result-producing handler appends a value through `Call`. An empty scalar-result hook means that the operation is unavailable; appending an explicit `null` counts as a handled result. SET, INIT, and GC hooks may complete without results. `hash` must append exactly one integer value.
 
 This adapter exposes one readable and writable property:
 
@@ -215,7 +215,7 @@ A `ModuleResolver` returns `ModuleResolver.Source` for a handled name and null t
 
 A source library also supplies native declarations. Register a callback with `library.function("host.log", callback)` and compile a script containing `native function host.log(message: string);`. The compiler checks that the named definition exists and is callable. Constants registered through `constant` or `text` use value declarations such as `native threshold: int;`. A qualified native name is bound directly and does not require a runtime `host` table. Compiled functions and constants continue through the existing per-VM linker, so symbols contain no addresses from another VM.
 
-Bundled standard modules use this same compile-time binding path. Their public ELX tables combine native bindings with script implementations. There is no separate `_n_*` module API. The standard-module loader owns its supplied native library and drops that library's loader root on unload; libraries supplied by application resolvers remain under the application's ownership.
+Bundled standard modules use this same compile-time binding path. Their public ELX tables combine native bindings with script implementations. The standard-module loader owns its supplied native library and drops that library's loader root on unload; libraries supplied by application resolvers remain under the application's ownership.
 
 Built-in modules are resolved first. Other requests try registered resolvers, then files under the configured directory, then bundled `/elx/` resources. A successful result is cached by the requested name. Script modules execute in the requesting VM and share its globals.
 
@@ -237,16 +237,16 @@ Compilation failures use `SyntaxException` with source location information. Run
 
 ## API map
 
-| Package or type                                                    | Responsibility                                                             |
-|--------------------------------------------------------------------|----------------------------------------------------------------------------|
-| `io.viki.elx.Context`, `Results`                                   | Runtime ownership and retained execution results.                          |
-| `io.viki.elx.compile.Compiler`                                     | Source compilation and source-level diagnostics.                           |
-| `io.viki.elx.asm.Prototype`, `Parameters`                          | Compiled code and function signature metadata.                             |
+| Package or type                                                            | Responsibility                                                             |
+|----------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| `io.viki.elx.Context`, `Results`                                           | Runtime ownership and retained execution results.                          |
+| `io.viki.elx.compile.Compiler`                                             | Source compilation and source-level diagnostics.                           |
+| `io.viki.elx.asm.Prototype`, `Parameters`                                  | Compiled code and function signature metadata.                             |
 | `io.viki.elx.lib.Library`, `SimpleLibrary`, `HostFunction`, `Call`, `Span` | Host definitions, borrowed input values, and callback results.             |
-| `io.viki.elx.vm.VM`, `Modules`                                     | Execution, linking, globals, modules, budgets, and collection controls.    |
-| `io.viki.elx.memory.Pin`, `PinMode`                                | Host retention and liveness.                                               |
-| `io.viki.elx.memory.HostAccess`, `ExtHeap`                         | Java object metamethods, identity conversion, and low-level bridge access. |
-| `io.viki.elx.memory.Slot`, `Memory`, `Arena`, `ElxHeap`            | Typed storage, allocation, and managed roots.                              |
-| `io.viki.elx.value.ElxList`, `ElxTable`                            | Managed container operations through typed slots.                          |
+| `io.viki.elx.vm.VM`, `Modules`                                             | Execution, linking, globals, modules, budgets, and collection controls.    |
+| `io.viki.elx.memory.Pin`, `PinMode`                                        | Host retention and liveness.                                               |
+| `io.viki.elx.memory.HostAccess`, `ExtHeap`                                 | Java object metamethods, identity conversion, and low-level bridge access. |
+| `io.viki.elx.memory.Slot`, `Memory`, `Arena`, `ElxHeap`                    | Typed storage, allocation, and managed roots.                              |
+| `io.viki.elx.value.ElxList`, `ElxTable`                                    | Managed container operations through typed slots.                          |
 
 [Back to the language manual](index.md)
