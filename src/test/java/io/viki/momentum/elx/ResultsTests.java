@@ -1,6 +1,7 @@
 package io.viki.elx;
 
 import io.viki.elx.compile.Compiler;
+import io.viki.elx.lib.Call;
 import io.viki.elx.lib.SimpleLibrary;
 import io.viki.elx.memory.Pin;
 import io.viki.elx.memory.ExtHeap;
@@ -92,6 +93,11 @@ public final class ResultsTests {
     }
     nullableHostValues();
     hostAccessValues();
+    Settings finalizing = new Settings();
+    try (Context owner = Context.open()) {
+      try (var slot = owner.vm().borrowSlots(1)) { slot.setObject(0, finalizing); }
+    }
+    equal(finalizing.collections, 1);
     Context context = Context.open();
     Results results = context.execute(COMPILER.compile("return 'held'"));
     Pin<String> pin = results.get(0);
@@ -113,18 +119,17 @@ public final class ResultsTests {
     private int collections;
 
     @Override
-    public void elx_handle(Metamethod method, io.viki.elx.lib.Args args) {
+    public void elx_handle(Metamethod method, Call args) {
       switch (method) {
         case GET -> {
-          if (!args.name().equals("value")) throw new IllegalArgumentException("Unknown Settings member");
+          if (!args.s(1).equals("value")) throw new IllegalArgumentException("Unknown Settings member");
           args.ro(value);
         }
         case SET -> {
-          if (!args.name().equals("value")) throw new IllegalArgumentException("Unknown Settings member");
-          value = args.o(0);
+          if (!args.s(1).equals("value")) throw new IllegalArgumentException("Unknown Settings member");
+          value = args.o(2);
         }
         case CALL -> {
-          if (!args.name().equals("reset")) throw new IllegalArgumentException("Unknown Settings member");
           value = null;
           resets++;
         }
@@ -171,7 +176,7 @@ public final class ResultsTests {
         try (Pin<Object> empty = context.pin("empty");
              Pin<Object> absent = context.pin("unknown")) {
           equal(empty.get(), null);
-          equal(absent.get(), null);
+          equal(absent.get(), io.viki.elx.VoidValue.INSTANCE);
           equal(empty.isPrimitive(), true);
         }
         Box box = new Box();

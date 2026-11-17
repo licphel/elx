@@ -19,14 +19,14 @@ public final class BraceSyntaxTests {
   public static void run() {
     // Compile the actual user-edited benchmark, then execute a small version hitting both branches.
     COMPILER.compileRaw("OptimizationBench", OptimizationBench.CODE.replace("$N",Integer.toString(OptimizationBench.ITERATIONS)),Library.EMPTY);
-    for(boolean nativeMemory:new boolean[]{false,true})for(Optimization mode:Optimization.values())try(Bench.Runtime r=new Bench.Runtime(nativeMemory)) {
+    for(boolean nativeMemory:new boolean[]{false,true})for(Optimization mode:new Optimization[]{Optimization.O1})try(Bench.Runtime r=new Bench.Runtime(nativeMemory)) {
       expect(r,mode,OptimizationBench.CODE.replace("$N","40").replace("10000","20"),780);
       expect(r,mode,"local f=function(a={x=[1,2]},b=function(x,y=3){return x+y},c=4){return b(a.x[1])+c};return f()",9);
       expect(r,mode,"function make(x){return {x=x,f=function(self){return self.x}}} return make(7):f()",7);
       expect(r,mode,"local x=1;{local x=2;{local y=3;}} return x",1);
-      expect(r,mode,"if false {} else if true {local x={};} else {} while false {} for i=0,i<2,i++ {} for v in [] {} return 3",3);
+      expect(r,mode,"if false {} else if true {local x={};} else {} while false {} for i=0,i<2,i++ {} for v in itr([]) {} return 3",3);
       expect(r,mode,"local f=function(){value=7;};f();return value",7);
-      expect(r,mode,"local f=function(){return};local x=f();return x==null",1);
+      expect(r,mode,"local f=function(){return};local x=f();return x==void",1);
       expect(r,mode,"local x=0;{x=1}.x+=2;{}.x=3;{x=4;}return x",4);
       expect(r,mode,"local f=function(){return {x={value=8}}};return f().x.value",8);
       expect(r,mode,"return 'do end {} function(x)'=='do end {} function(x)'",1);

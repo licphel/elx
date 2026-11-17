@@ -1,14 +1,14 @@
 local function findMethod(class, name) {
   local method = getrawattr(class, name);
-  if method != null { return method; }
+  if method != void { return method; }
   local parent = getrawattr(class, 'parent');
-  if parent != null { return findMethod(parent, name); }
-  return null;
+  if parent != void { return findMethod(parent, name); }
+  return void;
 }
 
 local function isAssignableFrom(ancestor, cls) {
   local current = cls;
-  while current != null {
+  while current != void {
     if current == ancestor { return true; }
     current = getrawattr(current, 'parent');
   }
@@ -16,28 +16,28 @@ local function isAssignableFrom(ancestor, cls) {
 }
 
 local function instanceof(obj, cls) {
-  if obj == null { return false; }
+  if obj == void { return false; }
   local objClass = getrawattr(obj, 'class');
-  if objClass == null { return false; }
+  if objClass == void { return false; }
   return isAssignableFrom(cls, objClass);
 }
 
 local function callCtor(instance, cls, args...) {
   local parent = getrawattr(cls, 'parent');
-  if parent != null { callCtor(instance, parent); }
+  if parent != void { callCtor(instance, parent); }
   local ctor = getrawattr(cls, 'ctor');
-  if ctor != null { ctor(instance, *args); }
+  if ctor != void { ctor(instance, *args); }
 }
 
-local function class(parent=null) {
+local function class(parent=void) {
   local result = {parent=parent};
   setmetatable(result, {
     call=function(self, args...) {
       local instance = {class=self};
       setmetatable(instance, {
-        getattr=function(target, name) {
+        get=function(target, name) {
           local value = getrawattr(target, name);
-          if value != null { return value; }
+          if value != void { return value; }
           return findMethod(self, name);
         }
       });

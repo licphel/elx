@@ -46,7 +46,7 @@ final class GcPressureBench {
       local gc=require('gc')
       gc.collect()
       local check=0l
-      for k,row in live { check+=*row.pointer }
+      for k,row in itr(live) { check+=*row.pointer }
       return total+check
       """;
   private static final int WARMUP = 0, ROUNDS = 5;

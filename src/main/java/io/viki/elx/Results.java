@@ -76,7 +76,7 @@ public final class Results implements AutoCloseable {
    * Returns the number of values captured from the invocation, including null values.
    * This metadata remains readable after close.
    *
-   * @return result count from zero through four
+   * @return result count from zero through sixteen
    */
   public int size() {
     return size;
@@ -88,7 +88,7 @@ public final class Results implements AutoCloseable {
    * @param index zero-based return index
    * @return the value type, including {@link Type#NULL} for an explicit null
    * @throws IndexOutOfBoundsException if the index is outside the returned values
-   * @throws IllegalStateException if the results or context have been closed
+   * @throws IllegalStateException     if the results or context have been closed
    */
   public Type type(int index) {
     return Slot.type(context.vm().memory(), slot(index));
@@ -99,7 +99,7 @@ public final class Results implements AutoCloseable {
    * Integers export as {@link Long}, floating-point values as {@link Float} or
    * {@link Double}, and strings as {@link String}. Lists, tables, functions, and
    * pointers export as VM-local {@link Long} handles. Booleans export as {@link Boolean},
-   * external objects use the configured adapter, and ELX null exports as Java null.
+   * external objects use the configured adapter, ELX null exports as Java null, and void exports as VoidValue.INSTANCE.
    * A pin keeps the allocation
    * alive but retains the lifetime rules of the underlying value, including stack pointers.
    *
@@ -110,10 +110,10 @@ public final class Results implements AutoCloseable {
    * when the chosen generic type is non-nullable.
    *
    * @param index zero-based return index
-   * @param <T> exported Java type expected by the caller
+   * @param <T>   exported Java type expected by the caller
    * @return a new pin owned by the caller, including for a returned null value
    * @throws IndexOutOfBoundsException if the index is outside the returned values
-   * @throws IllegalStateException if the results or context have been closed
+   * @throws IllegalStateException     if the results or context have been closed
    */
   public <T extends @Nullable Object> Pin<T> get(int index) {
     return context.pinSlot(slot(index));

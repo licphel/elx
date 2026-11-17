@@ -81,18 +81,18 @@ The host compiles source into a `Prototype` and executes it through a `Context`.
 
 ## 1. Lexical conventions
 
-Source is Unicode text. Identifiers are case-sensitive and may contain Unicode identifier characters, `_`, `$`, and `#`. Names beginning with `_` are reserved for host-internal source when normal compilation is used.
+Source is Unicode text. Identifiers are case-sensitive and may contain Unicode identifier characters, `_`, `$`, and `#`. Underscore-prefixed names are valid in ordinary source; hosts can still use them for internal symbols by convention.
 
 The reserved keywords are:
 
 ```
 local native function return if else while for in break continue
-true false null env print
+true false null void env print
 ```
 
 Line comments begin with `//` and continue to the line ending. Block comments are enclosed by `/*` and `*/`. The lexer removes comments before parsing. A backslash immediately followed by a newline continues the current statement onto the next line. Otherwise, newlines and semicolons separate statements.
 
-The preprocessor accepts a line-start `#define`. An object-like macro replaces a name with its replacement tokens. A function-like macro has an opening parenthesis immediately after its name in the definition. A final variadic parameter receives the remaining arguments as a list. `FILENAME` and `LINECOUNT` are built-in read-only macros. A bounded expansion depth limits recursive macro expansion.
+The preprocessor accepts line-start `#define`, `#undef`, `#include`, `#pragma once`, `#if`, `#ifdef`, `#ifndef`, `#elif`, `#else`, and `#endif` directives. An object-like macro replaces a name with its replacement tokens. A function-like macro has an opening parenthesis immediately after its name in the definition. A final variadic parameter receives the remaining arguments as a list. `defined(name)`, `FILENAME`, and `LINECOUNT` are available in preprocessor expressions. Includes use the compiler's `IncludeResolver`, retain source locations, reject recursive inclusion, and can be guarded with `#pragma once`. A bounded expansion depth and token budget limit recursive or explosive expansion.
 
 String literals use single or double quotes. Supported escapes are `\n`, `\r`, `\t`, `\0`, escaped quotes and backslashes, and four-digit `\uFFFF` escapes. Use an escaped `\n` to include a line break in a string.
 
@@ -114,7 +114,7 @@ A decimal fraction or exponent without a suffix is a `double`. A leading sign is
 
 ## 2. Values and types
 
-Values have a concrete runtime type. Numbers, booleans, strings, lists, tables, and functions can be stored in variables, passed to functions, and returned to a caller. `null` represents an absent value. A local declaration without an initializer and a lookup of a missing table key both produce `null`.
+Values have a concrete runtime type. Numbers, booleans, strings, lists, tables, functions, pointers, and external objects can be stored in variables, passed to functions, and returned to a caller. `null` is an explicit value. `void` represents a missing or unspecified value: an uninitialized declaration, an unresolved global, and a missing table key produce `void`.
 
 | Category         | Types                                 | Meaning                                                 |
 |------------------|---------------------------------------|---------------------------------------------------------|
@@ -122,13 +122,14 @@ Values have a concrete runtime type. Numbers, booleans, strings, lists, tables, 
 | Signed integer   | `byte`, `short`, `int`, `long`        | 8, 16, 32, or 64 bits.                                  |
 | Unsigned integer | `ubyte`, `ushort`, `uint`, `ulong`    | Explicit unsigned interpretation at the selected width. |
 | Floating point   | `float`, `double`                     | IEEE-754 single or double precision.                    |
+| Absence          | `void`, `null`                        | `void` is missing/default; `null` is an explicit value.  |
 | Managed value    | `string`, `list`, `table`, `function` | Heap-managed language values.                           |
 | Managed pointer  | `ptr`                                 | Checked handle created by address operations.           |
 | Host value       | `external`                            | Object owned by the host-side external heap.            |
 
 Binary numeric operations widen both operands to a common type. Integer width is the maximum operand width. The result is unsigned when an operand at that width is unsigned. If either operand is floating point, the result is `float` for a 32-bit operation or `double` for a 64-bit operation.
 
-Conversions are explicit. Integer narrowing keeps the target's low bits. Floating-point values converted to integers truncate toward zero, wrap to the target width, and reject non-finite values. Conversion functions are named after the target type, for example `int(value)`, `long(value)`, `float(value)`, and `double(value)`. `str(value)` formats a value through the VM formatter, and `type(value)` returns its source type name.
+Conversions are explicit. Arithmetic, conditions, and native typed reads require values of the appropriate type. Convert `void` explicitly before using a target type's default value. Integer narrowing keeps the target's low bits. Floating-point values converted to integers truncate toward zero, wrap to the target width, and reject non-finite values. Conversion functions are named after the target type, for example `int(value)`, `long(value)`, `float(value)`, and `double(value)`. Converting `void` to a number yields zero, and converting it to `bool` yields `false`. Typed conversion to `string` yields an empty string, while `str(void)` formats the value as the word `void`. Converting `void` to a list or table creates an empty container; conversion to reference types keeps it `void` rather than inventing a handle. `type(value)` returns the source type name.
 
 Integer arithmetic keeps the result within the selected width by wrapping. Signed integer division truncates toward zero, and its remainder follows the dividend's sign. Integer division by zero raises an error. Floating-point operations follow IEEE-754 behavior. Shift counts are masked to the operand width, and `>>>` shifts in zero bits.
 
@@ -140,7 +141,7 @@ A type annotation documents the intended type of a local, parameter, or return v
 
 ## 3. Variables, `env`, and scope
 
-`local` creates a binding in the current lexical scope. A braced block creates a nested scope. Function bodies create a new function scope and may capture bindings from their parents. A declaration without an initializer assigns `null`.
+`local` creates a binding in the current lexical scope. A braced block creates a nested scope. Function bodies create a new function scope and may capture bindings from their parents. A declaration without an initializer has type `void`.
 
 An unresolved ordinary name is a key in the VM's global environment table. The keyword `env` is the table itself:
 
@@ -191,7 +192,7 @@ A condition requires a `bool`. Comparisons produce booleans, and `bool(value)` r
 
 Prefix increment and decrement return the updated value. Their postfix forms return the previous value and then store the update. An address expression selects a writable location, and dereferencing a pointer accesses that location.
 
-A call may return up to four values. Scalar expression positions use one value, while multiple declarations and returns can carry several. The prefix `*` also expands a list in calls, assignments, and returns. The destination determines how the resulting values are consumed.
+A call may return up to sixteen values. Scalar expression positions use one value, while multiple declarations and returns can carry several. The prefix `*` also expands a list in calls, assignments, and returns. The destination determines how the resulting values are consumed.
 
 Arguments can be positional, named with `name=value`, or expanded from a list using `*values`. `**options` expands named arguments from a table. Positional arguments precede named arguments. Argument expressions run in source order before the callee binds them to parameters. Supplying the same parameter twice or naming an unknown parameter raises an error.
 
@@ -211,7 +212,9 @@ The C-style loop is `for initializer, condition, step { ... }`. The initializer 
 
 `continue` skips to the next iteration. In a C-style loop it runs the step before testing the condition again. `break` exits the innermost loop. Both statements require an enclosing loop.
 
-The iterator form is `for names in container { ... }`. It evaluates the container once and accepts a list or table. One binding receives the value. Two receive the key or index followed by the value. Three receive the ordinal, key or index, and value. List indices begin at zero. Table traversal follows the current hash-table storage order, which can change after insertion or resizing.
+The iterator form is `for names in iterable { ... }`. It evaluates `iterable` once, then calls the resulting zero-argument function for each step. Each call can yield several values; the loop assigns them to the listed names. When the first yielded value is `void`, iteration ends. Explicit `null` is an ordinary yielded value. A function that appends no results also ends iteration.
+
+`itr(list)` returns a function that yields one list element per call. `itr(table)` yields a key and its value. Container traversal follows the current table storage order, which can change after insertion or resizing. There is no implicit index or ordinal. To use a list index, keep a separate counter in the loop. The lazy `range(stop)`, `range(start, stop)`, and `range(start, stop, step)` functions can be used directly as iterables.
 
 ### Returns and calls
 
@@ -219,7 +222,9 @@ The iterator form is `for names in container { ... }`. It evaluates the containe
 
 ### Native declarations
 
-`native function host.log(message: string)` declares a signature at script scope. A return annotation can follow `->`. These declarations provide metadata for host tooling. The host supplies the actual implementation through a library.
+At script scope, `native function host.log(message: string)` resolves `host.log` in the host-supplied compile-time library. A return annotation can follow `->`. `native pi: double;` binds a scalar or string definition. Missing definitions, function/value mismatches, and duplicate declarations are compilation errors, even when the declaration is unused.
+
+Native references become symbol constants in the compiled image. The VM links them to its local handles; calling a native function performs no global or namespace-table lookup. Qualified names such as `host.log` are compile-time namespaces. Ordinary lexical bindings still take precedence. Parameter and return annotations describe the signature for tooling; the native implementation checks its actual call arguments.
 
 ## 6. Functions and closures
 
@@ -235,7 +240,7 @@ A call `receiver:method(arguments)` passes the receiver as the first argument. A
 
 ### Parameters and defaults
 
-Parameters become local bindings for the invocation. A required parameter must receive a value. Each optional parameter has a default expression evaluated on calls where that argument is absent. An explicitly supplied `null` counts as a supplied argument.
+Parameters become local bindings for the invocation. Each optional parameter has a default expression evaluated on calls where that argument is absent. An explicitly supplied `null` counts as a supplied argument, while omitted or unspecified values use `void`.
 
 Default expressions can use earlier parameters. A default container expression creates a fresh container each time it is evaluated. A final parameter written `rest...` gathers additional positional arguments into a list, including an empty list when there are none.
 
@@ -251,9 +256,9 @@ A function can retain values from enclosing lexical scopes. Each evaluation of a
 
 A list literal is a sequence in brackets, such as `[10, 20, 30]`. A table literal contains key/value entries in braces, such as `{name='elx', version=1}`. Table keys can be written as identifiers, quoted strings, or bracketed expressions followed by `=`.
 
-Lists use zero-based integer indices. Reading or replacing an element requires an index in `0` through `len(list)-1`. Assigning at `len(list)` appends one element. Other indices raise an error. Elements can hold different types, including `null`.
+Lists use zero-based integer indices. Reading or replacing an element requires an index in `0` through `len(list)-1`. Assigning at `len(list)` appends one element. Other indices raise an error. Elements can hold different types, including `null` and `void`.
 
-Tables store key/value pairs. `table.field` is shorthand for `table['field']`. A missing key reads as `null`, and an entry whose value is `null` still occupies a key. `sys.remove(table, key)` removes the entry. `len(table)` counts occupied entries. NaN is rejected as a key.
+Tables store key/value pairs. `table.field` is shorthand for `table['field']`. A missing key reads as `void`; `table.has` distinguishes an absent key from an entry whose value is `void` or `null`. `sys.remove(table, key)` removes the entry. `len(table)` counts occupied entries. NaN is rejected as a key.
 
 ### Container operators
 
@@ -273,19 +278,11 @@ List membership uses value equality. These operations preserve qualifying occurr
 
 A metatable is a table containing functions that customize another table's behavior. `setmetatable(value, meta)` attaches it, and `getmetatable(value)` retrieves it. Multiple values can use the same metatable.
 
-| Hook                                                       | Arguments and role                                                                              |
-|------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
-| `+`, `-`, `*`, `/`, `%`, `&`, `\|`, `^`, `<<`, `>>`, `>>>` | Binary operands in source order. Unary `+` and `-` use the corresponding hook with one operand. |
-| `~`, `!`, `++`, `--`                                       | One operand.                                                                                    |
-| `==`, `!=`, `<`, `<=`, `>`, `>=`                           | Two operands, returning a boolean.                                                              |
-| `bool`                                                     | The table, returning a boolean for explicit conversion.                                         |
-| `getattr`                                                  | The table and key, returning the selected value.                                                |
-| `setattr`                                                  | The table, key, and assigned value.                                                             |
-| `call`                                                     | The table followed by call arguments.                                                           |
-| `init`                                                     | Reserved initialization hook name in the current runtime metadata.                              |
-| `str`                                                      | The table, returning one string for formatting.                                                 |
+Metamethods are table fields named with lowercase words. For example, arithmetic uses `add` and `sub`; symbolic operator spellings such as `+` are not hook keys. The complete set is `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `invert`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`.
 
-Operator dispatch tries the left table's hook and then the right table's hook. A missing `!=` hook can use the result of `==` with inversion. Unary operations receive one argument, and predicate hooks must return a boolean.
+Arithmetic and comparison hooks receive operands in source order. Unary hooks receive one operand; unary plus uses `pos` and unary minus uses `neg`. Comparison and boolean-conversion hooks return a boolean. `get` receives the table and key, while `set` receives the table, key, and assigned value. `call` receives the table followed by explicit arguments. `str` formats a value, `gc` handles collection of an external object, and `hash` implements the explicit semantic hash operation.
+
+Operator dispatch tries the left table's hook and then the right table's hook. A missing `ne` hook can use the result of `eq` with inversion. Unary operations receive one argument, and predicate hooks must return a boolean. Explicit `hash(value)` honors the `hash` hook. Hashing keys for a table's own storage remains raw so a key's hash and equality do not change when script hooks run.
 
 Index hooks handle indexed operations even for keys that already exist. Use `getrawattr(table, key)` and `setrawattr(table, key, value)` inside these hooks to access storage directly. This also gives a hook an explicit way to delegate a read or write to the underlying table.
 
@@ -295,11 +292,11 @@ Hook fields accept functions or `null`. The runtime caches hook slots when a tab
 
 Compilation reports malformed source through `SyntaxException`, including source location information. Runtime errors unwind the current call and propagate to the caller. Java failures can carry a suppressed `ScriptTrace` containing script file names, functions, and line numbers.
 
-`throw(value)` formats its argument and raises a Java `IllegalStateException`. `assert(condition, message)` accepts a boolean and an optional message. It returns the condition on success and throws `AssertionError` on failure.
+`throw(value)` formats its argument and raises a Java `RuntimeException`. `assert(condition[, message])` accepts a boolean condition. Passing `void` requires an explicit `bool(void)` conversion. It returns a true condition unchanged and raises `AssertionError` on false, using the optional ELX-formatted message or `assertion failed` by default.
 
-`pcall(function)` invokes a function with zero arguments. On success it returns `true` followed by up to three of the function's results, keeping the total within the four-value result window. On a caught failure it returns `false` and a table with `cause` and `stacktrace` string fields.
+`pcall(targetfn, handlerfn)` requires two callable values and invokes `targetfn` with no arguments. On success it returns `true` followed by up to fifteen of the target's results. If the target throws a `RuntimeException` or `AssertionError`, `pcall` builds an error table with `cause` and `stacktrace` strings, passes that table as the sole argument to `handlerfn`, and returns `false` followed by up to fifteen handler results. An error raised by the handler propagates to the caller. Other Java `Error` subclasses are not caught.
 
-The current implementation catches `RuntimeException` in `pcall`. Java `Error` subclasses, including the `AssertionError` raised by `assert`, propagate to the host. Code using protected calls should distinguish these two failure paths.
+The two-value prefix (`true` or `false`) and up to fifteen forwarded values fit the sixteen-value result limit.
 
 ## 9. Modules
 
@@ -317,44 +314,79 @@ Built-in functions are available by name. Standard modules are obtained with `re
 
 | Name                                      | Purpose                                                                                        |
 |-------------------------------------------|------------------------------------------------------------------------------------------------|
-| `type`, numeric conversions, `str`, `len` | Inspect, convert, format, and measure values.                                                  |
-| `assert`, `throw`, `pcall`                | Raise and protect runtime failures.                                                            |
-| `range`                                   | Create a signed integer list from stop or start/stop/step arguments. The step must be nonzero. |
+| `type`, numeric conversions, `str`, `len`, `hash`, `itr`, `range` | Inspect, convert, format, measure, hash, and iterate values. |
+| `assert`, `throw`, `pcall`                | Raise and handle runtime failures.                                                             |
 | `getrawattr`, `setrawattr`                | Read or write a table field without metamethod dispatch.                                       |
 | `getmetatable`, `setmetatable`            | Read or replace a table metatable.                                                             |
 | `referenceequal`                          | Compare managed references by identity.                                                        |
 | `print`, `require`                        | Use the VM output sink and module loader.                                                      |
 
-The host standard modules are created per VM:
+Standard modules are ELX scripts under `/std/`. Each declares its host primitives with `native` and assembles its public table from these bindings and script functions. The loader supplies the module's native definitions during compilation. Only the public script module is loaded and cached; native implementations are linked symbols with no separate runtime module table. Unloading a standard module releases both its image and its native-library loader roots. Values still referenced by scripts or pins remain alive.
 
-| Module | Exports                                                                                       |
-|--------|-----------------------------------------------------------------------------------------------|
-| `math` | `abs`, `sqrt`, `floor`, `ceil`, `sin`, `cos`, `log`, `exp`, `pow`, `min`, `max`, `pi`, `inf`. |
-| `str`  | `length`, UTF-8 `bytelen`, `upper`, `lower`, `sub`, `contains`.                               |
-| `io`   | `stdout`, `print`, `read_text`, `write_text`, `exists`.                                       |
-| `sys`  | `env`, `unload`, `remove`, `identity`. `env` is the same table exposed by the `env` keyword.  |
-| `gc`   | `collect`, `pin`, `unpin`.                                                                    |
-| `util` | `base64_encode`, `base64_decode`, `time`, `date`.                                             |
+| Module | Exports |
+|--------|---------|
+| `list` | `copy`, `deepCopy`, `sort`, `reverse`, `insert`, `removeAt`, `remove`, `pop`, `push`, `clear`, `slice`, `concat`, `append`, `prepend`, `indexOf`, `lastIndexOf`, `contains`, `count`, `unique`, `flatten`, `zip`, `chunk`, `swap`, `fill`, `equals`, `isEmpty`, `size`, `empty`, `repeat`, `range`, `sum`, `min`, `max`. |
+| `table` | `create`, `get`, `set`, `remove`, `has`, `keys`, `values`, `entries`, `merge`, `mergeInto`, `clear`, `clone`, `invert`, `size`, `isEmpty`. |
+| `math` | `abs`, `sqrt`, `floor`, `ceil`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `log`, `exp`, `to_degrees`, `to_radians`, `pow`, `fmod`, `modf`, `min`, `max`, `pi`, `inf`. |
+| `str` | `charAt`, `codeAt`, `fromCode`, `toUpper`, `toLower`, `sub`, `trim`, `trimStart`, `trimEnd`, `contains`, `containsIgnoreCase`, `startsWith`, `endsWith`, `index`, `lastIndex`, `isSameIgnoreCase`, `replace`, `split`, `join`, `repeat`, `padStart`, `padEnd`, `format`. |
+| `io` | `print`, `readText`, `writeText`, `appendText`, `exists`, `delete`, `listDir`. |
+| `sys` | `env`, `unload`, `remove`, `identity`. `env` is the same table exposed by the `env` keyword. |
+| `gc` | `collect`, `pin`, `unpin`. |
+| `util` | `encodeBase64`, `decodeBase64`, `time`, `date`, `genUuid`. |
+| `random` | `seed`, `rand`, `randl`, `randf`, `randd`, `randb`. |
+| `re` | `matches`, `find`, `findAll`, `replace`, `split`, `escape`; flags `caseInsensitive`, `multiline`, `dotAll`, `unicodeCase`. |
+| `path` | `normalize`, `absolute`, `isAbsolute`, `cwd`, `join`, `relative`, `parent`, `name`, `stem`, `extension`, `separator`. |
+| `json` | `parse`, `stringify`. |
+| `time` | `millis`, `nanos`, `date`, `parse`, `sleep`. |
+| `fmt` | `format`, `printf`, `interpolate`. |
 
 ### Numeric and conversion functions
 
-`type(value)` returns the source type name. Numeric conversions use the target type's name, including `byte`, `ubyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, and `double`. `bool(value)` requests boolean conversion. `str(value)` uses VM formatting, including table string hooks.
+`type(value)` returns the source type name. Numeric conversions use the target type's name, including `byte`, `ubyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`, `float`, and `double`. `bool(value)` requests boolean conversion. `str(value)` uses VM formatting, including table string hooks. `hash(value)` requests the value's semantic hash operation. `itr(list)` and `itr(table)` adapt containers to function iterables.
 
-`range(stop)`, `range(start, stop)`, and `range(start, stop, step)` return a list of `long` integers. The default start is zero and the default step is one. The stop is exclusive. A negative step walks downward, and an already exhausted range produces an empty list. Arguments must fit a signed `long`.
+`range(stop)`, `range(start, stop)`, and `range(start, stop, step)` return a lazy function iterable that yields `long` integers. The default start is zero and the default step is one. The stop is exclusive. A negative step walks downward, and an already exhausted range ends immediately. Arguments must fit a signed `long`.
 
 ### Standard module behavior
 
 All unary `math` functions return `double`, including `floor`, `ceil`, and `abs`. `pow(x, y)` also returns `double`. `min(values...)` and `max(values...)` require at least one numeric argument and return `double`.
 
-`str.length(text)` counts code points and `str.bytelen(text)` counts UTF-8 bytes. `str.sub(text, start, end)` uses zero-based code-point offsets with an exclusive end. Omitting the end selects the rest of the string. Invalid offsets raise an error. `upper` and `lower` use locale-independent case conversion, and `contains(text, part)` tests for a literal substring.
+`str.charAt` and `str.codeAt` use zero-based Unicode code-point indices. `str.sub(text, start, end)` uses an exclusive end and defaults to the rest of the string. `toUpper` and `toLower` use locale-independent case conversion. `split` preserves trailing empty fields and requires a non-empty separator. `join(separator, values...)` joins formatted string arguments with the separator. `format` replaces each `{}` marker with the next value's ELX formatted representation.
 
-`io.stdout(values...)` concatenates formatted values. `io.print(values...)` adds tab separators and a platform line ending, matching the global `print`. Text files use UTF-8. `read_text(path)` returns the full file, `write_text(path, text)` creates or replaces its contents, and `exists(path)` returns a boolean. Relative paths use the Java process working directory. File errors propagate as unchecked I/O exceptions.
+`io.print(values...)` separates values with `, ` and appends a newline, matching the global `print`. Text files use UTF-8. `readText(path)` returns the full file, `writeText(path, text)` creates or replaces its contents, `appendText(path, text)` appends to a file, and `exists(path)` returns a boolean. `listDir(path)` returns entry names. Relative paths use the Java process working directory. File errors propagate as unchecked I/O exceptions.
 
 `sys.env` is the VM's global table. `sys.remove(table, key)` returns whether an entry was removed. `sys.identity(value)` returns its raw payload as a `long`, which is useful for runtime diagnostics. Its handle values belong to the current runtime instance.
 
 `gc.collect()` requests a pressure collection. `gc.pin(pointer)` strongly retains a live non-stack pointer and returns that pointer. `gc.unpin(pointer)` releases one such retention. Pair these calls when retaining script pointers explicitly.
 
-`util.base64_encode(text)` encodes UTF-8 bytes and `base64_decode(text)` decodes them back into text. `util.time()` returns epoch milliseconds as a `long`. `util.date()` formats the current instant, and `util.date(milliseconds)` formats the supplied instant as an ISO-8601 string.
+`util.encodeBase64(text)` encodes UTF-8 bytes and `decodeBase64(text)` decodes them back into text. `util.time()` returns epoch milliseconds as a `long`. `util.date()` formats the current instant, and `util.date(milliseconds)` formats the supplied instant as an ISO-8601 string. `genUuid()` returns a random UUID string.
+
+`list` contains ordered, zero-based sequence operations. `sort` mutates its input and uses ELX `<` semantics, so mixed numeric types are promoted as they are in expressions and table `lt` hooks participate. `min` and `max` are written in ELX on top of those comparisons. `sum` starts at `0.0` and uses ordinary arithmetic promotion. `append(target, source)` and `prepend(target, source)` copy the source elements into the target. `slice(list, from, end)` uses an exclusive end. `range` also uses an exclusive stop.
+
+`table` exposes raw key/value access. `get(table, key, fallback)` distinguishes an absent key from a key whose value is `null` or `void`; `has` reports presence. `merge(left, right)` creates a new table with right-hand entries taking precedence. `mergeInto(target, source)` mutates the target. `entries` returns a list of `{key, value}` tables. Table keys use the same raw equality and hashing rules as table indexing, without invoking value comparison or hash hooks. `list.range` remains an eager list constructor; the global `range` is lazy.
+
+### Random numbers
+
+Random generation belongs to `random`. Each VM owns its generator state. `seed(long)` resets its sequence, allowing scripts to reproduce a run. `rand(min, max)` returns an `int` and `randl(min, max)` returns a `long`; both bounds are inclusive, including the largest representable integer. `randf()` and `randd()` sample from [0, 1). Their two-argument forms sample [min, max), with finite bounds. Equal bounds return that value. `randb()` returns a boolean. Reversed bounds and a single floating-point bound raise an error.
+
+### Paths and regular expressions
+
+Path operations use the host platform's path syntax. `join(parts...)` resolves each part against the accumulated path and normalizes the result; an absolute part replaces the preceding path. `normalize(path)` removes redundant components, and `absolute(path)` also resolves against the working directory. `relative(base, target)` computes a relative path between compatible roots. `parent(path)` returns `void` when no parent exists. `name` returns the final component, `stem` removes its last extension, and `extension` includes the leading dot. A leading-dot filename such as `.profile` has an empty extension. These operations manipulate paths without accessing files.
+
+Regular expressions use Java pattern syntax. All functions accept text first and pattern second. `matches(text, pattern, flags=0)` tests the whole string. `find(text, pattern, start=0, flags=0)` searches from a zero-based code-point offset and returns `void` when no match exists. A match is a table with code-point `start`, exclusive `end`, and a `groups` list: index zero holds the complete match, followed by captures. An unmatched optional capture is `null`.
+
+`findAll(text, pattern, flags=0)` returns a list of match tables, including zero-width matches. `replace(text, pattern, replacement, flags=0)` replaces all matches and interprets Java replacement references such as `$1`. `split(text, pattern, flags=0)` preserves trailing empty fields. `escape(text)` produces a literal pattern. Combine flag constants with bitwise `|`.
+
+### JSON
+
+`json.parse(text)` parses one complete JSON value. Arrays become lists, objects become tables with string keys, and JSON null becomes explicit ELX `null`. Duplicate object keys keep the last value. Integers use `int`, `long`, or `ulong` according to their range; fractions and exponent forms use finite `double` values. Integer overflow and floating-point overflow raise an error. Unicode escapes support surrogate pairs. Errors include the input character offset.
+
+`json.stringify(value)` returns compact JSON. It accepts booleans, numeric values, strings, null, lists, and tables with string keys. Object member order follows table traversal order. Shared acyclic containers are supported. Cycles, non-finite numbers, `void`, functions, pointers, and host objects raise an error. Both operations allow at most 128 nested container levels.
+
+### Time and formatting
+
+`time.millis()` returns epoch milliseconds. `time.nanos()` returns a monotonic nanosecond counter suitable for elapsed-time differences. Both return `long`. `date(milliseconds)` formats an ISO-8601 UTC instant, and its zero-argument form uses the current time. `parse(text)` converts an ISO instant to epoch milliseconds. `sleep(milliseconds)` blocks the VM thread; interruption preserves the thread's interrupted status and raises an error. The existing `util.time` and `util.date` names are ELX aliases for `time.millis` and `time.date`.
+
+`fmt.format(template, values...)` uses locale-independent Java printf syntax, such as `%04d`, `%.2f`, and `%s`. Integral values remain integral, including unsigned 64-bit values. Other ELX containers use their normal string representation for `%s`. `fmt.printf` writes the formatted string to the VM output sink without appending a newline. `fmt.interpolate` aliases `str.format`, which uses sequential `{}` placeholders.
 
 ## 11. Memory, pointers, and GC
 
@@ -372,7 +404,7 @@ The current collector keeps addresses stable. The pin contract also reserves the
 
 The Java embedding API has three main parts. `Compiler` turns source into a reusable `Prototype`. `Context` owns an executing runtime and returns `Results` from an execution. `Library` supplies named functions and constants that scripts can use.
 
-Application callbacks implement `HostFunction` and receive an `Args` view of their inputs and outputs. Java objects implement `HostAccess` to expose ELX metamethods through the default external heap. `ExtHeap` remains available for low-level bridge customization. These are complementary extension points: a library exposes functions by name, while a host object exposes behavior on its own instances.
+Application callbacks implement `HostFunction` and receive a borrowed `Call` view over indexed values. It provides the `Span` read/write operations, a separate append-only result window, and rooted scratch spans for temporary values. Java objects implement `HostAccess` and handle each `Metamethod` through one `elx_handle(Metamethod, Call)` method. `ExtHeap` remains available for low-level bridge customization. A library exposes functions by name, while a host object exposes behavior on its own instances.
 
 The [Java API reference](java-api.md) covers compilation options, returned-value conversion, pin ownership, host callbacks, external-object adapters, module resolution, and execution controls.
 
@@ -380,9 +412,9 @@ The [Java API reference](java-api.md) covers compilation options, returned-value
 
 The compiler emits an immutable register-based `Prototype`. It stores instructions, constants, strings, nested functions, call-site metadata, and source line information. The linker resolves library symbols and assigns VM-local function handles.
 
-O1 images use integrated operations where possible. O0 lowers them through the internal runtime ABI for backend development. Applications compile and load images through the public compiler and runtime APIs, which manage the corresponding VM-local bindings.
+O1 is the implemented bytecode path. O0 is reserved as an optimization-level name but is currently unsupported; requesting it raises `UnsupportedOperationException`. Applications compile and load O1 images through the public compiler and runtime APIs, which manage VM-local bindings.
 
-The interpreter maintains register windows, call frames, closure handles, result windows, an instruction budget, and GC safepoints. At most four ordinary result slots are returned by a call. Dynamic list expansion uses a separate dereference path. A prototype may be linked into more than one VM, and each VM assigns independent local addresses.
+The interpreter maintains tagged register windows, call frames, closure handles, result windows, an instruction budget, and GC safepoints. The optimizer performs bounded constant, copy, liveness, loop-invariant, and instruction-fusion rewrites while preserving address-taken locals and hook-visible operations. A call reserves only the result slots its consumers need, up to sixteen values. A function-valued loop iterable is called once per iteration; its first `void` result ends the loop, while `null` remains a yieldable value. A prototype may be linked into more than one VM, and each VM assigns independent local addresses.
 
 ## Appendix A: grammar outline
 
@@ -398,6 +430,8 @@ block       ::= '{' chunk '}'
 function    ::= 'function' '(' parameters ')' [ '->' type ] block
 method      ::= 'function' name ('.' | ':') name '(' parameters ')' block
 local       ::= 'local' names [ '=' expressions ]
+native-declaration ::= 'native' 'function' qualified-name '(' parameters ')' [ '->' type ]
+                     | 'native' qualified-name [ ':' type ]
 call        ::= expression '(' arguments ')'
 ```
 
@@ -419,9 +453,9 @@ ELX uses a table-oriented model, first-class functions, closures, metatables, an
 
 ## Appendix C: implementation limits
 
-- A normal call and return window contains at most four values.
+- A normal call and return window contains at most sixteen values.
 - A function prototype uses at most 256 registers.
 - The VM is thread-confined. Use one context per executing thread unless the host provides its own synchronization boundary.
 - The module cache is per VM and detects cycles.
-- Native declarations describe script-level signatures. The host supplies their implementations through a library.
-- O0 is an internal lowering form and may change as the VM backend evolves.
+- Native declarations resolve host-library symbols during compilation. Their type annotations remain signature metadata.
+- O0 is reserved but not implemented. O1 is the supported compiler output.

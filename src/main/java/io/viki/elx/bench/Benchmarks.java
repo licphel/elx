@@ -32,12 +32,12 @@ final class Benchmarks {
   public static void main(String[] args) {
     Fib28Bench.main(args);
     LoopBench.main(args);
-    TableBench.main(args);
+    io.viki.elx.bench.TableBench.main(args);
     ObjectBench.main(args);
     PointerBench.main(args);
     GlobalsLibraryBench.main(args);
     GcPressureBench.main(args);
-    OptimizationBench.main(args);
-    CxBench.main(args);
+    io.viki.elx.bench.OptimizationBench.main(args);
+    io.viki.elx.bench.CxBench.main(args);
   }
 }

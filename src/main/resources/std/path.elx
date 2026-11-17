@@ -1,0 +1,25 @@
+native function normalize(args...);
+native function absolute(args...);
+native function isAbsolute(args...);
+native function cwd(args...);
+native function join(args...);
+native function relative(args...);
+native function parent(args...);
+native function name(args...);
+native function stem(args...);
+native function extension(args...);
+native separator: string;
+
+return {
+  separator=separator,
+  normalize=normalize,
+  absolute=absolute,
+  isAbsolute=isAbsolute,
+  cwd=cwd,
+  join=join,
+  relative=relative,
+  parent=parent,
+  name=name,
+  stem=stem,
+  extension=extension
+};

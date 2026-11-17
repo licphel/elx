@@ -25,14 +25,18 @@
 package io.viki.elx.asm;
 
 /**
- * Compiler/runtime optimization policy for integrated ELX operations.
- *
- * <p>{@link #O0} lowers integrated operations through the decomposition and library ABI, while
- * {@link #O1} selects fused interpreter operations where available.
+ * Compiler optimization policy. Only the O1 language interpreter is implemented.
  */
 public enum Optimization {
-  /** Expand integrated operations into base instructions and linked library calls. */
+  /** Reserved for a future backend; requesting this level fails explicitly. */
   O0,
   /** Retain or select fused integrated operations in the interpreter. */
-  O1
+  O1;
+
+  /** Rejects reserved execution policies before compiling any source. */
+  public void requireImplemented() {
+    if (this == O0) {
+      throw new UnsupportedOperationException("ELX O0 is not implemented; use O1");
+    }
+  }
 }

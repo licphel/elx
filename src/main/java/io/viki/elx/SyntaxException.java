@@ -46,10 +46,11 @@ public final class SyntaxException extends RuntimeException {
    * Creates a syntax diagnostic for a source span.
    *
    * @param message human-readable description of the syntax error
-   * @param span source span associated with the error
+   * @param span    source span associated with the error
    */
   public SyntaxException(String message, Token.Span span) {
-    super("Line " + span.line() + ", column " + span.column() + ": " + message);
+    super((span.sourceName() == null ? "" : span.sourceName() + ":")
+        + "Line " + span.line() + ", column " + span.column() + ": " + message);
     this.span = span;
   }
 

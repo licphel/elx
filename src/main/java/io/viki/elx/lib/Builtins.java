@@ -26,15 +26,13 @@ package io.viki.elx.lib;
 
 import io.viki.elx.Type;
 import io.viki.elx.asm.Assembler;
-import io.viki.elx.asm.Instr;
 import io.viki.elx.asm.Op;
-import io.viki.elx.memory.Slot;
+import io.viki.elx.memory.HeapVisitor;
+import io.viki.elx.memory.HostAccess;
 import io.viki.elx.value.ElxList;
-import io.viki.elx.value.ElxTable;
 import io.viki.elx.vm.ScriptTrace;
+import io.viki.elx.vm.Slots;
 import org.jspecify.annotations.Nullable;
-
-import java.math.BigInteger;
 
 /**
  * Standard ELX library definitions. The table is assembled once from the VM's
@@ -76,153 +74,208 @@ public final class Builtins {
     SimpleLibrary library = new SimpleLibrary();
     for (Type type : Type.values()) {
       if (type.numeric()) {
-        Assembler code = new Assembler();
-        code.immediate(Op.CX_CONVERT, 1, 0, type.ordinal()).r(Op.CX_RETURN, 1, 1, 0);
-        library.function(type.displayName(), code.build(2, 1));
+        library.function(type.displayName(), args -> {
+          args.arity(1);
+          Span result = args.scratch(1);
+          args.operations().convert(type, args, 0, result, 0);
+          args.rvalue(result, 0);
+        });
       }
     }
-    library.function("len",
-        new Assembler().r(Op.CX_LEN, 1, 0, 0).r(Op.CX_RETURN, 1, 1, 0).build(2, 1));
-    library.function("getrawattr",
-        new Assembler().immediate(Op.CX_GUARD, 0, 0, Type.TABLE.ordinal()).r(Op.CX_GET_TABLE, 2, 0, 1).r(Op.CX_RETURN, 2, 1, 0).build(3, 2));
-    library.function("setrawattr",
-        new Assembler().immediate(Op.CX_GUARD, 0, 0, Type.TABLE.ordinal()).r(Op.CX_SET_TABLE, 0, 1, 2).r(Op.CX_RETURN, 0, 1, 0).build(3, 3));
-    library.function("getmetatable",
-        new Assembler().r(Op.CX_GET_META, 1, 0, 0).r(Op.CX_RETURN, 1, 1, 0).build(2, 1));
-    library.function("setmetatable",
-        new Assembler().r(Op.CX_SET_META, 2, 0, 1).r(Op.CX_RETURN, 2, 1, 0).build(3, 2));
-    library.function("referenceequal",
-        new Assembler().r(Op.EQ64, 2, 0, 1).r(Op.CX_RETURN, 2, 1, 0).build(3, 2));
+    library.function("len", args -> {
+      args.arity(1);
+      args.ri(io.viki.elx.value.RawValues.length(Slots.memory(args), Slots.address(args, 0)));
+    });
+    library.function("getrawattr", args -> {
+      args.arity(2);
+      Span out = args.scratch(1);
+      args.containers().tableGet(args, 0, args, 1, out, 0);
+      args.rvalue(out, 0);
+    });
+    library.function("setrawattr", args -> {
+      args.arity(3);
+      args.containers().tableSet(args, 0, args, 1, args, 2);
+      args.rarg(0);
+    });
+    library.function("getmetatable", new Assembler().r(Op.GETMETA, 1, 0, 0).r(Op.RETURN1, 1, 0, 0).build(2, 1));
+    library.function("setmetatable", new Assembler().r(Op.SETMETA, 2, 0, 1).r(Op.RETURN1, 2, 0, 0).build(3, 2));
+    library.function("referenceequal", args -> {
+      args.arity(2);
+      args.rb(args.type(0) == args.type(1) && args.bits(0) == args.bits(1));
+    });
     library.function("require", args -> {
       args.arity(1);
-      // require may execute a module and reenter host functions before returning.
-      if (args.typeof(0) != Type.STRING) {
+      if (args.type(0) != Type.STRING) {
         throw new IllegalArgumentException("require expects a module name string");
       }
-      args.vm().modules().require(args.bits(0), args.slot(0));
-      args.returnArgument(0);
+      Span out = args.scratch(1);
+      Slots.vm(args).modules().require(args.bits(0), Slots.address(out, 0));
+      args.rvalue(out, 0);
     });
-    library.function("print",
-        args -> args.vm().output().accept(args.join("\t") + '\n'));
+    library.function("print", args -> {
+      StringBuilder text = new StringBuilder();
+      for (int i = 0; i < args.size(); i++) {
+        if (i > 0) {
+          text.append(", ");
+        }
+        text.append(args.operations().format(args, i));
+      }
+      Slots.vm(args).output().accept(text.append('\n').toString());
+    });
     library.function("str", args -> {
       args.arity(1);
-      args.rs(args.format(0));
+      args.rs(args.operations().format(args, 0));
     });
     library.function("assert", args -> {
-      if (args.size() < 1 || args.size() > 2 || args.typeof(0) != Type.BOOL) {
-        throw new IllegalArgumentException("assert expects a bool and an optional message");
-      }
+      args.arity(1, 2);
       if (!args.b(0)) {
-        throw new AssertionError(args.size() == 2 ? args.format(1) : "assertion failed");
+        throw new AssertionError(args.size() == 2 ? args.operations().format(args, 1) : "assertion failed");
       }
-      args.returnArgument(0);
+      args.rarg(0);
     });
     library.function("throw", args -> {
       args.arity(1);
-      throw new IllegalStateException(args.format(0));
+      throw new RuntimeException(args.operations().format(args, 0));
     });
     library.function("pcall", args -> {
-      args.arity(1);
-      if (args.typeof(0) != Type.FUNCTION) {
-        throw new IllegalArgumentException("pcall expects a function");
+      args.arity(2);
+      for (int i = 0; i < 2; i++) {
+        Type type = args.type(i);
+        boolean callable = type == Type.FUNCTION
+            || type == Type.EXTERNAL && Slots.vm(args).external().exportJava(args.bits(i)) instanceof HostAccess
+            || type == Type.TABLE && io.viki.elx.value.ElxTable.hook(
+            Slots.memory(args), args.bits(i), io.viki.elx.value.Metamethod.CALL.ordinal()) != 0;
+        if (!callable) {
+          throw new IllegalArgumentException("pcall argument " + i + " must be callable");
+        }
       }
+      Span out = args.scratch(16), inputs = args.scratch(0);
       try {
-        int returned = args.vm().execute(args.bits(0), 0, 0);
+        int count = args.operations().call(args, 0, inputs, out);
         args.rb(true);
-        returnResults(args, returned, 1);
-      } catch (RuntimeException failure) {
-        long error = errorTable(args, failure);
-        args.heap().retain(error);
-        try {
+        for (int i = 0; i < Math.min(count, 15); i++) {
+          args.rvalue(out, i);
+        }
+      } catch (RuntimeException | AssertionError failure) {
+        Span table = args.scratch(1), pair = args.scratch(2);
+        args.containers().newTable(table, 0, 2);
+        pair.setString(0, "cause");
+        pair.setString(1, failure.getClass().getSimpleName() + (failure.getMessage() == null ? "" : ": " + failure.getMessage()));
+        args.containers().tableSet(table, 0, pair, 0, pair, 1);
+        StringBuilder trace = new StringBuilder();
+        for (Throwable suppressed : failure.getSuppressed()) {
+          if (suppressed instanceof ScriptTrace) {
+            for (StackTraceElement frame : suppressed.getStackTrace()) {
+              if (!trace.isEmpty()) {
+                trace.append(System.lineSeparator());
+              }
+              trace.append(frame);
+            }
+          }
+        }
+        pair.setString(0, "stacktrace");
+        pair.setString(1, trace.toString());
+        args.containers().tableSet(table, 0, pair, 0, pair, 1);
+        Span handlerInputs = args.scratch(1);
+        handlerInputs.copy(0, table, 0);
+        int count = args.operations().call(args, 1, handlerInputs, out);
         args.rb(false);
-          args.returnValue(Type.TABLE, error);
-        } finally {
-          args.heap().release(error);
+        for (int i = 0; i < Math.min(count, 15); i++) {
+          args.rvalue(out, i);
         }
       }
     });
     library.function("range", args -> {
-      if (args.size() < 1 || args.size() > 3) {
-        throw new IllegalArgumentException("range expects stop, start/stop, or start/stop/step");
-      }
+      args.arity(1, 3);
       long start = args.size() == 1 ? 0 : rangeArgument(args, 0);
       long stop = rangeArgument(args, args.size() == 1 ? 0 : 1);
       long step = args.size() == 3 ? rangeArgument(args, 2) : 1;
       if (step == 0) {
         throw new IllegalArgumentException("range step cannot be zero");
       }
-      BigInteger first = BigInteger.valueOf(start), last = BigInteger.valueOf(stop);
-      BigInteger stride = BigInteger.valueOf(step).abs();
-      BigInteger distance = step > 0 ? last.subtract(first) : first.subtract(last);
-      BigInteger count = distance.signum() <= 0 ? BigInteger.ZERO : distance.add(stride).subtract(BigInteger.ONE).divide(stride);
-      if (count.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
-        throw new IllegalArgumentException("range is too large: " + count);
-      }
-      long list = ElxList.create(args.heap());
-      int length = count.intValueExact();
-      long value = start;
-      for (int i = 0; i < length; i++) {
-        ElxList.append(args.heap(), list, Type.LONG, value);
-        if (i + 1 < length) {
-          value = Math.addExact(value, step);
+      long function = Slots.vm(args).function(new HostFunction() {
+        private long current = start;
+        private boolean exhausted;
+
+        @Override
+        public void invoke(Call call) {
+          call.arity(0);
+          if (exhausted || (step > 0 ? current >= stop : current <= stop)) {
+            return;
+          }
+          call.rl(current);
+          long next = current + step;
+          exhausted = step > 0 ? next < current : next > current;
+          current = next;
         }
-      }
-      args.returnValue(Type.LIST, list);
+      });
+      args.r(Type.FUNCTION, function);
     });
-    Assembler typeCode = new Assembler();
-    typeCode.r(Op.CX_TYPE, 1, 0, 0);
-    for (Type type : Type.values()) {
-      int next = typeCode.label();
-      typeCode.constant(2, typeCode.constant(Type.UBYTE, Byte.toUnsignedInt(type.tag())));
-      typeCode.rx(Op.ICMP, 3, 1, 2, Instr.control(Type.UBYTE, Instr.Relation.EQ)).branch(Op.CX_BR_FALSE, 3, next);
-      typeCode.constant(4, typeCode.string(type.displayName())).r(Op.CX_RETURN, 4, 1, 0).bind(next);
-    }
-    typeCode.immediate(Op.TRAP, 0, 0, 1);
-    library.function("type", typeCode.build(5, 1));
+    library.function("itr", args -> {
+      args.arity(1);
+      Type type = args.type(0);
+      if (type != Type.LIST && type != Type.TABLE) {
+        throw new IllegalArgumentException("itr expects a list or table");
+      }
+      long container = args.bits(0);
+      var vm = Slots.vm(args);
+      long function = vm.function(new HostFunction() {
+        private final long version = type == Type.TABLE ? io.viki.elx.value.ElxTable.version(vm.memory(), container) : 0;
+        private int index;
+        private long cursor;
+        private boolean exhausted;
+
+        @Override
+        public void invoke(Call call) {
+          call.arity(0);
+          if (exhausted) {
+            return;
+          }
+          Span out = call.scratch(type == Type.TABLE ? 4 : 1);
+          if (type == Type.LIST) {
+            if (index == ElxList.size(vm.memory(), container)) {
+              exhausted = true;
+              return;
+            }
+            ElxList.get(vm.memory(), container, index++, Slots.address(out, 0));
+            call.rvalue(out, 0);
+          } else {
+            if (version != io.viki.elx.value.ElxTable.version(vm.memory(), container)) {
+              throw new java.util.ConcurrentModificationException("Table changed during iteration");
+            }
+            io.viki.elx.value.ElxTable.next(vm.memory(), Slots.address(out, 0), container, cursor);
+            cursor = out.i(3);
+            if (cursor == -1) {
+              exhausted = true;
+              return;
+            }
+            call.rvalue(out, 1);
+            call.rvalue(out, 2);
+          }
+        }
+
+        @Override
+        public void trace(HeapVisitor visitor) {
+          visitor.visit(type, container);
+        }
+      });
+      args.r(Type.FUNCTION, function);
+    });
+    library.function("hash", args -> {
+      args.arity(1);
+      args.rl(args.operations().hash(args, 0));
+    });
+    library.function("type", args -> {
+      args.arity(1);
+      args.rs(args.type(0).displayName());
+    });
     return library.freeze();
   }
 
-  private static long rangeArgument(Args args, int index) {
-    if (args.typeof(index) == Type.ULONG && args.bits(index) < 0) {
+  private static long rangeArgument(Span args, int index) {
+    if (args.type(index) == Type.ULONG && args.bits(index) < 0) {
       throw new IllegalArgumentException("range arguments must fit a signed long");
     }
     return args.i(index);
-  }
-
-  private static void returnResults(Args args, int count, int offset) {
-    long results = args.vm().results();
-    for (int i = 0; i < count && i + offset < 4; i++) {
-      long at = Slot.address(results, i);
-      args.returnValue(Slot.type(args.memory(), at), Slot.bits(args.memory(), at));
-    }
-  }
-
-  private static long errorTable(Args args, RuntimeException failure) {
-    String message = failure.getMessage();
-    String cause = failure.getClass().getSimpleName() + (message == null ? "" : ": " + message);
-    StringBuilder stacktrace = new StringBuilder();
-    for (Throwable suppressed : failure.getSuppressed()) {
-      if (suppressed instanceof ScriptTrace) {
-        for (StackTraceElement frame : suppressed.getStackTrace()) {
-          if (!stacktrace.isEmpty()) {
-            stacktrace.append(System.lineSeparator());
-          }
-          stacktrace.append(frame);
-        }
-      }
-    }
-    long table = ElxTable.create(args.heap());
-    long pair = args.heap().arena().allocate(2 * Slot.SIZE);
-    try {
-      Slot.write(args.memory(), pair, Type.STRING, args.heap().importString("cause"));
-      Slot.write(args.memory(), pair + Slot.SIZE, Type.STRING, args.heap().importString(cause));
-      ElxTable.set(args.heap(), table, pair, pair + Slot.SIZE);
-      Slot.write(args.memory(), pair, Type.STRING, args.heap().importString("stacktrace"));
-      Slot.write(args.memory(), pair + Slot.SIZE, Type.STRING, args.heap().importString(stacktrace.toString()));
-      ElxTable.set(args.heap(), table, pair, pair + Slot.SIZE);
-    } finally {
-      args.heap().arena().free(pair);
-    }
-    return table;
   }
 }

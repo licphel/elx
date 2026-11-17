@@ -1,7 +1,6 @@
 package io.viki.elx;
 
 import io.viki.elx.Type;
-import io.viki.elx.asm.DecomposeRules;
 import io.viki.elx.asm.Op;
 import io.viki.elx.lex.NumericLiteral;
 import io.viki.elx.lex.Token;
@@ -20,7 +19,6 @@ public final class MemoryTests {
     equal(Type.binary(Type.SHORT,Type.SHORT),Type.SHORT);
     equal(Type.binary(Type.LONG,Type.FLOAT),Type.DOUBLE);
     equal(Type.cast(Double.doubleToRawLongBits(1.0),Type.DOUBLE,Type.BOOL),1L);
-    for(Op op:Op.values())equal(op.integrated(),!DecomposeRules.get(op).isEmpty());
     for(var entry: Token.FIXED.entrySet())equal(Token.matchFixed(entry.getKey(),0),entry.getValue());
     equal(NumericLiteral.scan("1us",0).type(),Type.USHORT);
     exercise(new JavaMemory(16));

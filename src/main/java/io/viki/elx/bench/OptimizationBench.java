@@ -24,7 +24,6 @@
 
 package io.viki.elx.bench;
 
-import io.viki.elx.asm.Decomposer;
 import io.viki.elx.asm.Optimizer;
 import io.viki.elx.asm.Prototype;
 import io.viki.elx.compile.Compiler;
@@ -43,7 +42,7 @@ final class OptimizationBench {
       local t = {}
       for i=0l,i<$Nl,i++ {
       total+=i
-      {}.x += abs(total<<i)+"STR:Name1"
+      {x=""}.x += abs(total<<i)+"STR:Name1"
       if i < 10000 {
         T[str(i)]=total
       } else {
@@ -63,9 +62,8 @@ final class OptimizationBench {
       Prototype raw = new Compiler().compileRaw("optimization-bench", CODE.replace("$N", Integer.toString(ITERATIONS)), Library.EMPTY);
       measure("raw", raw);
       measure("O1", Optimizer.optimize(raw));
-      measure("O0", Decomposer.lower(raw));
     } catch (Exception e) {
-      e.printStackTrace();
+      throw new RuntimeException("Optimization benchmark failed", e);
     }
   }
 

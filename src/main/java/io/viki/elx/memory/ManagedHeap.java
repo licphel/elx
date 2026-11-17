@@ -82,7 +82,7 @@ abstract class ManagedHeap<T extends @Nullable Object> implements Heap<T> {
    * Releases subclass-owned storage for one allocation.
    *
    * @param index metadata index being released
-   * @param ptr allocation base address
+   * @param ptr   allocation base address
    */
   protected abstract void dispose(int index, long ptr);
 
@@ -180,7 +180,7 @@ abstract class ManagedHeap<T extends @Nullable Object> implements Heap<T> {
    * Starts a mark phase and clears marks from the previous collection.
    *
    * @param pressure whether weakly retained allocations may be reclaimed in
-   *                  this cycle
+   *                 this cycle
    * @throws IllegalStateException if this heap is closed
    */
   @Override
@@ -195,7 +195,7 @@ abstract class ManagedHeap<T extends @Nullable Object> implements Heap<T> {
    *
    * @param ptr base or interior pointer to mark
    * @return {@code true} when this call changed an unmarked allocation to
-   *         marked; {@code false} for null or an already marked pointer
+   * marked; {@code false} for null or an already marked pointer
    * @throws IllegalStateException if {@code ptr} is not a live heap pointer
    */
   @Override
@@ -277,7 +277,7 @@ abstract class ManagedHeap<T extends @Nullable Object> implements Heap<T> {
    *
    * @param ptr pointer to test
    * @return {@code true} while the allocation is live; {@code false} for null,
-   *         stale, or foreign pointers and after close
+   * stale, or foreign pointers and after close
    */
   @Override
   public final boolean isAlive(long ptr) {
@@ -297,10 +297,10 @@ abstract class ManagedHeap<T extends @Nullable Object> implements Heap<T> {
   /**
    * Creates a generation-checked pin for an allocation.
    *
-   * @param ptr base or interior pointer to pin
+   * @param ptr  base or interior pointer to pin
    * @param mode retention policy; {@link PinMode#NEVER} creates a non-retaining
-   *         view, {@link PinMode#WEAK} survives ordinary GC, and
-   *         {@link PinMode#STRONG} prevents reclamation
+   *             view, {@link PinMode#WEAK} survives ordinary GC, and
+   *             {@link PinMode#STRONG} prevents reclamation
    * @return pin that must be closed when the view is no longer needed
    * @throws IllegalStateException if the pointer is dead or the heap is closed
    */

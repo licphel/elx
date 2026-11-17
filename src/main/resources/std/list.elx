@@ -1,0 +1,94 @@
+native function copy(args...);
+native function deepCopy(args...);
+native function sort(args...);
+native function reverse(args...);
+native function insert(args...);
+native function removeAt(args...);
+native function remove(args...);
+native function pop(args...);
+native function push(args...);
+native function clear(args...);
+native function slice(args...);
+native function concat(args...);
+native function append(args...);
+native function prepend(args...);
+native function indexOf(args...);
+native function lastIndexOf(args...);
+native function contains(args...);
+native function count(args...);
+native function unique(args...);
+native function flatten(args...);
+native function zip(args...);
+native function chunk(args...);
+native function swap(args...);
+native function fill(args...);
+native function equals(args...);
+native function isEmpty(args...);
+native function size(args...);
+native function empty(args...);
+native function repeat(args...);
+native function range(args...);
+
+local list = {};
+list.copy = copy;
+list.deepCopy = deepCopy;
+list.sort = sort;
+list.reverse = reverse;
+list.insert = insert;
+list.removeAt = removeAt;
+list.remove = remove;
+list.pop = pop;
+list.push = push;
+list.clear = clear;
+list.slice = slice;
+list.concat = concat;
+list.append = append;
+list.prepend = prepend;
+list.indexOf = indexOf;
+list.lastIndexOf = lastIndexOf;
+list.contains = contains;
+list.count = count;
+list.unique = unique;
+list.flatten = flatten;
+list.zip = zip;
+list.chunk = chunk;
+list.swap = swap;
+list.fill = fill;
+list.equals = equals;
+list.isEmpty = isEmpty;
+list.size = size;
+list.empty = empty;
+list.repeat = repeat;
+list.range = range;
+
+list.sum = function(values) {
+  local total = 0.0;
+  for (value in itr(values)) {
+    total += value;
+  }
+  return total;
+};
+
+list.min = function(values) {
+  local found = false;
+  local best = void;
+  for (value in itr(values)) {
+    if (!found || value < best) { best = value; }
+    found = true;
+  }
+  assert(found, "list.min expects a non-empty list");
+  return best;
+};
+
+list.max = function(values) {
+  local found = false;
+  local best = void;
+  for (value in itr(values)) {
+    if (!found || value > best) { best = value; }
+    found = true;
+  }
+  assert(found, "list.max expects a non-empty list");
+  return best;
+};
+
+return list;

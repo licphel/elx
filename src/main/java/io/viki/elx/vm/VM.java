@@ -26,9 +26,6 @@ package io.viki.elx.vm;
 
 import io.viki.elx.Type;
 import io.viki.elx.asm.*;
-import io.viki.elx.memory.*;
-import io.viki.elx.value.*;
-import io.viki.elx.asm.*;
 import io.viki.elx.lib.DynamicLibrary;
 import io.viki.elx.lib.Library;
 import io.viki.elx.lib.ValueText;
@@ -48,10 +45,11 @@ import java.util.function.Consumer;
  * frames, return windows and budgets remain shared through that boundary.
  */
 public final class VM implements AutoCloseable {
-  private static final int MAX_RESULTS = 4;
+  /** Limit synchronous host/hook reentry before exhausting the Java call stack. */
+  private static final int MAX_REENTRY = 128;
+  private static final int MAX_RESULTS = io.viki.elx.lib.Call.MAX_RESULTS;
   private static final int POLL_MASK = 255;
   private static final int INVERT_RESULT = 1 << 8;
-  private static final ElxHeap.Layout[] LAYOUTS = ElxHeap.Layout.values();
   private static final long DEFAULT_GC_INTERVAL = 1L << 20;
   private final ElxHeap heap;
   private final ExtHeap external;
@@ -62,6 +60,8 @@ public final class VM implements AutoCloseable {
   private final Linker linker;
   private final long globals;
   private final Modules modules;
+  private final Operations operations;
+  private final Containers containers;
   private long collections, gcNanos;
   private long gcInterval = DEFAULT_GC_INTERVAL, nextGc;
   private Consumer<String> output = System.out::print;
@@ -81,9 +81,9 @@ public final class VM implements AutoCloseable {
    * resources. The VM initializes the global table and standard {@code sys}
    * module immediately; all supplied resources remain owned by the caller.
    *
-   * @param heap internal ELX heap
+   * @param heap     internal ELX heap
    * @param external external Java heap sharing the internal memory
-   * @param regs reusable register-window stack
+   * @param regs     reusable register-window stack
    */
   public VM(ElxHeap heap, ExtHeap external, JavaRegs regs) {
     this.heap = heap;
@@ -95,6 +95,8 @@ public final class VM implements AutoCloseable {
     gc = new Gc(heap, external, regs);
     linker = new Linker(this, heap, external);
     globals = ElxTable.create(heap);
+    operations = new Operations(this);
+    containers = new Containers(this);
     modules = new Modules(this);
     long system = arena.allocate(Slot.SIZE);
     try {
@@ -106,26 +108,61 @@ public final class VM implements AutoCloseable {
     nextGc = heap.allocatedBytes() + gcInterval;
   }
 
-  private static boolean compare(int comparison, Instr.Relation relation) {
-    return switch (relation) {
-      case EQ -> comparison == 0;
-      case NE -> comparison != 0;
-      case LT -> comparison < 0;
-      case LE -> comparison <= 0;
-      case GT -> comparison > 0;
-      case GE -> comparison >= 0;
-    };
+  /**
+   * Creates a GC-traced native function value in this VM.
+   *
+   * @param function callback invoked with a borrowed {@link io.viki.elx.lib.Call}
+   * @return VM-local function handle
+   * @throws IllegalStateException if the VM is closed
+   */
+  public long function(io.viki.elx.lib.HostFunction function) {
+    checkOpen();
+    long header = heap.allocate(ElxHeap.Layout.CLOSURE, 3);
+    Slot.write(memory, header, Type.INT, -1);
+    Slot.write(memory, header + Slot.SIZE, Type.EXTERNAL, external.add(HostCalls.bind(this, function)));
+    Slot.write(memory, header + 2L * Slot.SIZE, Type.VOID, 0);
+    return header;
   }
 
-  private static boolean compareFloat(double x, double y, Instr.Relation relation) {
-    return switch (relation) {
-      case EQ -> x == y;
-      case NE -> x != y;
-      case LT -> x < y;
-      case LE -> x <= y;
-      case GT -> x > y;
-      case GE -> x >= y;
-    };
+  /**
+   * Returns the VM's shared language-semantic operation facade.
+   *
+   * @return thread-confined operation facade
+   */
+  public ValueOperations operations() {
+    return operations;
+  }
+
+  /**
+   * Returns raw list and table operations that bypass metamethod dispatch.
+   *
+   * @return thread-confined container facade
+   */
+  public ContOp containers() {
+    return containers;
+  }
+
+  /**
+   * Borrows a zero-initialized, GC-rooted span of scratch slots.
+   *
+   * @param count requested slot count
+   * @return scope that releases the slots when closed
+   * @throws IllegalArgumentException if {@code count} is negative
+   * @throws IllegalStateException    if the VM is closed
+   */
+  public Slots.Scope borrowSlots(int count) {
+    if (count < 0) {
+      throw new IllegalArgumentException("Negative scratch size: " + count);
+    }
+    long base = regs.enter(Math.max(1, count));
+    for (int i = 0; i < count; i++) {
+      Slot.write(memory, Slot.address(base, i), Type.VOID, 0);
+    }
+    return new Slots.Scope(this, base, count);
+  }
+
+  void releaseSlots() {
+    regs.leave();
   }
 
   /**
@@ -196,10 +233,10 @@ public final class VM implements AutoCloseable {
    * Returns the optimization form of the innermost executing image.
    *
    * @return {@link Optimization#O0} for a base-only image, otherwise
-   *         {@link Optimization#O1}; returns O1 when no frame is active
+   * {@link Optimization#O1}; returns O1 when no frame is active
    */
   public Optimization optimization() {
-    return depth > 0 && linker.image(functions[depth - 1]).baseOnly() ? Optimization.O0 : Optimization.O1;
+    return Optimization.O1;
   }
 
   /**
@@ -252,7 +289,7 @@ public final class VM implements AutoCloseable {
    *
    * @param bytes positive number of newly allocated bytes between collection requests
    * @throws IllegalArgumentException if {@code bytes} is not positive
-   * @throws IllegalStateException if the VM is closed
+   * @throws IllegalStateException    if the VM is closed
    */
   public void gcInterval(long bytes) {
     if (bytes <= 0) {
@@ -299,9 +336,9 @@ public final class VM implements AutoCloseable {
   /**
    * Copies a named global value into a caller-provided result slot.
    *
-   * @param name UTF-8 global name
+   * @param name   UTF-8 global name
    * @param result destination slot
-   * @throws NullPointerException if {@code name} is null
+   * @throws NullPointerException  if {@code name} is null
    * @throws IllegalStateException if the VM is closed
    */
   public void getGlobal(String name, long result) {
@@ -317,9 +354,9 @@ public final class VM implements AutoCloseable {
   /**
    * Stores a caller-provided slot value under a global name.
    *
-   * @param name UTF-8 global name
+   * @param name  UTF-8 global name
    * @param value source slot
-   * @throws NullPointerException if {@code name} is null
+   * @throws NullPointerException  if {@code name} is null
    * @throws IllegalStateException if the VM is closed
    */
   public void setGlobal(String name, long value) {
@@ -342,6 +379,52 @@ public final class VM implements AutoCloseable {
    */
   public long results() {
     return lastResults;
+  }
+
+  /**
+   * Compares two slot values using the same path as the script {@code <}
+   * operator.
+   *
+   * <p>This evaluates {@code left < right} and, when that is false,
+   * {@code right < left}. Both evaluations go through the VM's operator hook
+   * machinery, so table {@code lt} metamethods, external-object comparison
+   * hooks, numeric ordering, and the default fallback all behave exactly as
+   * they do for a script comparison.</p>
+   *
+   * <p>Numeric comparisons avoid scratch storage. Other types borrow a rooted
+   * scratch slot and may reenter script code. It is intended for host-side
+   * ordering, such as sorting a list; tight loops that compare thousands of
+   * tables should expect one hook invocation per comparison.</p>
+   *
+   * @param left  left slot address
+   * @param right right slot address
+   * @return negative when {@code left < right}, zero when neither operand is
+   * less than the other, positive when {@code right < left}
+   * @throws IllegalStateException if either slot is dead or the VM is closed
+   */
+  public int compare(long left, long right) {
+    if (operations.test(left, right, Instr.Relation.LT.ordinal())) {
+      return -1;
+    }
+    return operations.test(right, left, Instr.Relation.LT.ordinal()) ? 1 : 0;
+  }
+
+  /**
+   * Tests two slot values for equality using the script {@code ==} path.
+   *
+   * <p>Evaluates the VM's equality operator, so table {@code eq} metamethods,
+   * external-object equality hooks, and the default value comparison behave
+   * exactly as in a script {@code left == right}. Numeric comparisons avoid scratch
+   * storage. Other types borrow one rooted slot and may reenter script code when
+   * an equality hook is installed.</p>
+   *
+   * @param left  left slot address
+   * @param right right slot address
+   * @return whether the values compare equal
+   * @throws IllegalStateException if either slot is dead or the VM is closed
+   */
+  public boolean equal(long left, long right) {
+    return operations.test(left, right, Instr.Relation.EQ.ordinal());
   }
 
   /**
@@ -443,7 +526,7 @@ public final class VM implements AutoCloseable {
    *
    * @param instructions positive instruction budget
    * @throws IllegalArgumentException if the budget is not positive
-   * @throws IllegalStateException if the VM is closed
+   * @throws IllegalStateException    if the VM is closed
    */
   public void budget(long instructions) {
     if (instructions <= 0) {
@@ -490,7 +573,7 @@ public final class VM implements AutoCloseable {
    * Executes a compiled image with no arguments.
    *
    * @param image compiled image
-   * @return number of returned values, from zero through four
+   * @return number of returned values, from zero through sixteen
    * @throws IllegalStateException if the VM is closed or execution fails
    */
   public int execute(Prototype image) {
@@ -501,11 +584,11 @@ public final class VM implements AutoCloseable {
    * Executes a compiled image using a contiguous input-slot window.
    *
    * @param image compiled image
-   * @param args input-slot base address
+   * @param args  input-slot base address
    * @param count number of input slots
-   * @return number of returned values, from zero through four
+   * @return number of returned values, from zero through sixteen
    * @throws IllegalArgumentException if the image rejects the argument count
-   * @throws IllegalStateException if the VM is closed or execution fails
+   * @throws IllegalStateException    if the VM is closed or execution fails
    */
   public int execute(Prototype image, long args, int count) {
     return execute(load(image), args, count);
@@ -517,15 +600,18 @@ public final class VM implements AutoCloseable {
    * invocation receives an independent borrowed result window.
    *
    * @param function VM-local function handle
-   * @param args input-slot base address
-   * @param count number of input slots
-   * @return number of returned values, from zero through four
+   * @param args     input-slot base address
+   * @param count    number of input slots
+   * @return number of returned values, from zero through sixteen
    * @throws IllegalArgumentException if the handle or argument count is invalid
-   * @throws IllegalStateException if the VM is closed, execution exceeds its
-   *                               budget, or a script operation fails
+   * @throws IllegalStateException    if the VM is closed, execution exceeds its
+   *                                  budget, or a script operation fails
    */
   public int execute(long function, long args, int count) {
     checkOpen();
+    if (invocationDepth >= MAX_REENTRY) {
+      throw new IllegalStateException("ELX host/metamethod reentry exceeds " + MAX_REENTRY);
+    }
     int stop = depth, invocation = invocationDepth++;
     if (invocation == results.length) {
       results = Arrays.copyOf(results, invocation * 2);
@@ -661,7 +747,7 @@ public final class VM implements AutoCloseable {
 
   private void clearResults(long base, int from, int count) {
     for (int i = from; i < count; i++) {
-      Slot.write(memory, Slot.address(base, i), Type.NULL, 0);
+      Slot.write(memory, Slot.address(base, i), Type.VOID, 0);
     }
   }
 
@@ -683,8 +769,10 @@ public final class VM implements AutoCloseable {
       linker.visitRoots(visitor);
       visitor.visit(Type.TABLE, globals);
       modules.visitRoots(visitor);
-      for (long window : results) {
-        if (window != 0) {
+      for (int invocation = 0; invocation < results.length; invocation++) {
+        long window = results[invocation];
+        // Inactive scratch return windows must not retain previous nested calls.
+        if (window != 0 && (invocation < invocationDepth || window == lastResults)) {
           for (int i = 0; i < MAX_RESULTS; i++) {
             long cell = Slot.address(window, i);
             if (Slot.isReference(memory, cell)) {
@@ -701,510 +789,182 @@ public final class VM implements AutoCloseable {
   }
 
   private void runUntil(int stop) {
+    int cachedFrame = -1, id = -1;
+    long instructionBase = 0, base = 0;
     while (depth > stop) {
-      int frame = depth - 1, id = functions[frame], pc = pcs[frame];
-      long instructionBase = linker.code(id);
+      int frame = depth - 1, pc = pcs[frame];
+      if (frame != cachedFrame) {
+        cachedFrame = frame;
+        id = functions[frame];
+        instructionBase = linker.code(id);
+        base = bases[frame];
+      }
       int word = memory.load32(instructionBase + (long) pc * Instr.WORD_BYTES);
       Op op = Instr.op(word);
       pcs[frame] = pc + op.format().words();
       if ((++executed & POLL_MASK) == 0) {
         safePoint();
       }
-      long base = bases[frame];
       int registerMask = op.registerMask();
       // Match the A/B/C bits used by prototype validation; immediates are not addresses.
       long a = (registerMask & 1) != 0 ? Slot.address(base, Instr.a(word)) : 0;
       long b = (registerMask & 2) != 0 ? Slot.address(base, Instr.b(word)) : 0;
       long c = (registerMask & 4) != 0 ? Slot.address(base, Instr.c(word)) : 0;
+      int extension = op.format().words() > 1
+          ? memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES) : 0;
       switch (op) {
-        case FRAME_ADDR -> Slot.write(memory, a, Type.PTR, base);
-        case FRAME_CONTEXT, CX_SELF -> Slot.write(memory, a, Type.FUNCTION, handles[frame]);
-        case ECALL -> environmentCall(a, b, c, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case BR_ZERO -> {
-          if (Slot.bits(memory, a) == 0) {
+        case MOVE -> Slot.copy(memory, a, b, 1);
+        case LOADK -> Slot.copy(memory, a, Slot.address(linker.constants(id), Instr.index(word)), 1);
+        case LOADNULL -> Slot.write(memory, a, Type.NULL, 0);
+        case LOADVOID -> Slot.write(memory, a, Type.VOID, 0);
+        case LOADBOOL -> Slot.write(memory, a, Type.BOOL, Instr.b(word));
+        case GETENV -> Slot.write(memory, a, Type.TABLE, globals);
+        case GETGLOBAL -> readTableIndex(a, globals, Slot.address(linker.constants(id), Instr.index(word)));
+        case SETGLOBAL -> ElxTable.set(heap, globals, Slot.address(linker.constants(id), extension), a);
+        case GETUPVAL -> Slot.copy(memory, a, Slot.address(handles[frame], Instr.b(word) + 1), 1);
+        case SETUPVAL -> Slot.copy(memory, Slot.address(handles[frame], Instr.b(word) + 1), a, 1);
+        case SELF -> Slot.write(memory, a, Type.FUNCTION, handles[frame]);
+        case CLOSURE -> createClosure(a, b, c, extension);
+        case NEWLIST, NEWTABLE -> {
+          safePoint();
+          Slot.write(memory, a, op == Op.NEWLIST ? Type.LIST : Type.TABLE,
+              heap.allocate(op == Op.NEWLIST ? ElxHeap.Layout.LIST : ElxHeap.Layout.TABLE, Instr.b(word)));
+        }
+        case GETTABLE -> readIndex(a, b, c);
+        case SETTABLE -> writeIndex(a, b, c);
+        case GETFIELD -> readIndex(a, b, Slot.address(linker.constants(id), extension));
+        case SETFIELD -> writeIndex(a, Slot.address(linker.constants(id), extension), b);
+        case GETI, SETI -> {
+          try (Slots.Scope key = borrowSlots(1)) {
+            key.setInt(0, Instr.c(word));
+            if (op == Op.GETI) {
+              readIndex(a, b, Slots.address(key, 0));
+            } else {
+              writeIndex(a, Slots.address(key, 0), b);
+            }
+            completeRuntimeHook(depth);
+          }
+        }
+        case RAWGET -> RawValues.getIndex(memory, b, c, a);
+        case RAWSET -> RawValues.setIndex(heap, a, b, c);
+        case APPEND -> ElxList.append(heap, Slot.bits(memory, a), b);
+        case ADD, SUB, MUL, DIV, MOD, BAND, BOR, BXOR, SHL, SHR, USHR -> operations.execute(op, a, b, c, 0);
+        case NEG, POS, BNOT, NOT, INC, DEC -> operations.execute(op, a, b, b, 0);
+        case COMPARE -> operations.execute(op, a, b, c, extension);
+        case ADDK, SUBK -> operations.execute(op == Op.ADDK ? Op.ADD : Op.SUB, a, b,
+            Slot.address(linker.constants(id), extension), 0);
+        case ADDI -> {
+          Type kind = Slot.type(memory, b);
+          if (!kind.integer()) {
+            throw new IllegalArgumentException("ADDI requires integer, got " + kind);
+          }
+          Slot.write(memory, a, kind, Type.normalize(Slot.bits(memory, b) + extension, kind));
+        }
+        case RAWEQUAL -> Slot.write(memory, a, Type.BOOL, RawValues.equal(memory, b, c) ? 1 : 0);
+        case JMP -> pcs[frame] = pc + Instr.jumpOffset(word) / Instr.WORD_BYTES;
+        case BR_TRUE, BR_FALSE -> {
+          if (condition(a) == (op == Op.BR_TRUE)) {
             pcs[frame] = pc + Instr.branchOffset(word) / Instr.WORD_BYTES;
           }
         }
-        case BR_NONZERO -> {
-          if (Slot.bits(memory, a) != 0) {
+        case BR_VOID -> {
+          if (Slot.type(memory, a) == Type.VOID) {
             pcs[frame] = pc + Instr.branchOffset(word) / Instr.WORD_BYTES;
           }
         }
-        case CX_BR_PRESENT -> {
+        case BR_PRESENT -> {
           if (Slot.type(memory, a) != Type.INVALID) {
             pcs[frame] = pc + Instr.branchOffset(word) / Instr.WORD_BYTES;
           }
         }
-        case CX_CALL_NAMED -> namedCall(a, b, c, linker.image(id).callSite(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case CX_RETURN_INDIRECT -> {
-          int count = Math.toIntExact(Slot.bits(memory, b));
-          if (count < 0 || count > MAX_RESULTS) {
-            throw new IllegalArgumentException("At most four return values are supported");
-          }
-          finishValues(Slot.bits(memory, a), count);
-        }
-        case CX_CALL_INDIRECT -> indirectCall(a, b, c, base, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case CX_LOCAL_PTR -> Slot.write(memory, a, Type.PTR, Pointers.local(heap, frameTokens[frame], Instr.b(word)));
-        case CX_INDEX_PTR -> {
-          safePoint();
-          Slot.write(memory, a, Type.PTR, Pointers.indexed(heap, b, c));
-        }
-        case CX_GLOBAL_PTR -> {
-          safePoint();
-          Slot.write(memory, a, Type.PTR, Pointers.global(heap, globals, b));
-        }
-        case CX_WRITE_PTR -> pointerWrite(a, b);
-        case CX_CAPTURE_PTR -> Slot.write(memory, a, Type.PTR, Pointers.capture(heap, handles[frame], memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case CX_CONST_PTR -> Slot.write(memory, a, Type.PTR, Pointers.constant(heap, linker.constants(id), Instr.index(word)));
-        case CX_ENV -> Slot.write(memory, a, Type.TABLE, globals);
-        case CX_GET_GLOBAL_CONST ->
-            ElxTable.get(memory, globals, Slot.address(linker.constants(id), Instr.index(word)), a);
-        case CX_GET_GLOBAL -> ElxTable.get(memory, globals, b, a);
-        case CX_SET_GLOBAL -> ElxTable.set(heap, globals, a, b);
-        case NOP -> {
-        }
-        case MOVE -> Slot.copy(memory, a, b, 1);
-        case LC -> Slot.copy(memory, a, Slot.address(linker.constants(id), Instr.index(word)), 1);
-        case CX_TYPE -> Slot.write(memory, a, Type.UBYTE, Byte.toUnsignedInt(Slot.type(memory, b).tag()));
-        case CX_BITS -> Slot.write(memory, a, Type.ULONG, Slot.bits(memory, b));
-        case CX_LEN -> Slot.write(memory, a, Type.INT, ValueOperations.length(memory, b));
-        case CX_PACK -> Slot.write(memory, a, Type.fromTag((byte) Slot.bits(memory, b)), Slot.bits(memory, c));
-        case CX_CONVERT -> convertValue(a, b, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case CX_TO_STRING -> Slot.write(memory, a, Type.STRING, heap.importString(format(b)));
-        case CX_GUARD -> {
-          Type expected = Type.fromTag((byte) memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (Slot.type(memory, a) != expected) {
-            throw new IllegalArgumentException("Expected " + expected + ", got " + Slot.type(memory, a));
-          }
-        }
-        case IADD -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x + y, kind));
-        }
-        case ISUB -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x - y, kind));
-        }
-        case IMUL -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x * y, kind));
-        }
-        case IDIV -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Type.normalize(Slot.bits(memory, b), kind), y = Type.normalize(Slot.bits(memory, c), kind);
-          Slot.write(memory, a, kind, Type.normalize(x / y, kind));
-        }
-        case UDIV -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long mask = -1L >>> (64 - kind.width());
-          long x = Slot.bits(memory, b) & mask, y = Slot.bits(memory, c) & mask;
-          Slot.write(memory, a, kind, Type.normalize(Long.divideUnsigned(x, y), kind));
-        }
-        case IREM -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Type.normalize(Slot.bits(memory, b), kind), y = Type.normalize(Slot.bits(memory, c), kind);
-          Slot.write(memory, a, kind, Type.normalize(x % y, kind));
-        }
-        case UREM -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long mask = -1L >>> (64 - kind.width());
-          long x = Slot.bits(memory, b) & mask, y = Slot.bits(memory, c) & mask;
-          Slot.write(memory, a, kind, Type.normalize(Long.remainderUnsigned(x, y), kind));
-        }
-        case BAND -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x & y, kind));
-        }
-        case BOR -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x | y, kind));
-        }
-        case BXOR -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x ^ y, kind));
-        }
-        case SHL -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-          Slot.write(memory, a, kind, Type.normalize(x << ((int) y & (kind.width() - 1)), kind));
-        }
-        case SHR -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Type.normalize(Slot.bits(memory, b), kind), y = Type.normalize(Slot.bits(memory, c), kind);
-          Slot.write(memory, a, kind, Type.normalize(x >> ((int) y & (kind.width() - 1)), kind));
-        }
-        case USHR -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long x = Type.normalize(Slot.bits(memory, b), kind), y = Type.normalize(Slot.bits(memory, c), kind);
-          Slot.write(memory, a, kind, Type.normalize((kind.width() == 64 ? x >>> ((int) y & 63) : (x & ((1L << kind.width()) - 1)) >>> ((int) y & (kind.width() - 1))), kind));
-        }
-        case INEG -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          Slot.write(memory, a, kind, Type.normalize(-Slot.bits(memory, b), kind));
-        }
-        case BNOT -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          Slot.write(memory, a, kind, Type.normalize(~Slot.bits(memory, b), kind));
-        }
-        case FNEG -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          long sign = kind == Type.FLOAT ? 0x80000000L : Long.MIN_VALUE;
-          Slot.write(memory, a, kind, Slot.bits(memory, b) ^ sign);
-        }
-        case FADD -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (kind == Type.FLOAT) {
-            float x = Slot.getFloat(memory, b), y = Slot.getFloat(memory, c);
-            Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(x + y)));
-          } else {
-            Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) + Slot.getDouble(memory, c)));
-          }
-        }
-        case FSUB -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (kind == Type.FLOAT) {
-            float x = Slot.getFloat(memory, b), y = Slot.getFloat(memory, c);
-            Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(x - y)));
-          } else {
-            Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) - Slot.getDouble(memory, c)));
-          }
-        }
-        case FMUL -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (kind == Type.FLOAT) {
-            float x = Slot.getFloat(memory, b), y = Slot.getFloat(memory, c);
-            Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(x * y)));
-          } else {
-            Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) * Slot.getDouble(memory, c)));
-          }
-        }
-        case FDIV -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (kind == Type.FLOAT) {
-            float x = Slot.getFloat(memory, b), y = Slot.getFloat(memory, c);
-            Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(x / y)));
-          } else {
-            Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) / Slot.getDouble(memory, c)));
-          }
-        }
-        case FREM -> {
-          Type kind = Instr.type(memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-          if (kind == Type.FLOAT) {
-            float x = Slot.getFloat(memory, b), y = Slot.getFloat(memory, c);
-            Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(x % y)));
-          } else {
-            Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) % Slot.getDouble(memory, c)));
-          }
-        }
-        case CX_BOOL_NOT -> {
-          if (!operatorHook(Op.CX_BOOL_NOT.ordinal(), a, b, b)) {
-            Slot.write(memory, a, Type.BOOL, condition(b) ? 0 : 1);
-          }
-        }
-        case ICMP -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          Type kind = Instr.type(control);
-          long x = Type.normalize(Slot.bits(memory, b), kind), y = Type.normalize(Slot.bits(memory, c), kind);
-          Slot.write(memory, a, Type.BOOL, compare(Long.compare(x, y), Instr.relation(control)) ? 1 : 0);
-        }
-        case UCMP -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          Type kind = Instr.type(control);
-          long mask = -1L >>> (64 - kind.width());
-          long x = Slot.bits(memory, b) & mask, y = Slot.bits(memory, c) & mask;
-          Slot.write(memory, a, Type.BOOL, compare(Long.compareUnsigned(x, y), Instr.relation(control)) ? 1 : 0);
-        }
-        case FCMP -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          Type kind = Instr.type(control);
-          Slot.write(memory, a, Type.BOOL, compareFloat(Type.asDouble(Slot.bits(memory, b), kind), Type.asDouble(Slot.bits(memory, c), kind), Instr.relation(control)) ? 1 : 0);
-        }
-        case EQ64 -> Slot.write(memory, a, Type.BOOL, Slot.bits(memory, b) == Slot.bits(memory, c) ? 1 : 0);
-        case CX_ALLOC -> {
-          safePoint();
-          long pointer = heap.allocate(LAYOUTS[Math.toIntExact(Slot.bits(memory, c))], Math.toIntExact(Slot.bits(memory, b)));
-          Slot.write(memory, a, Type.PTR, pointer);
-        }
-        case LEA -> Slot.write(memory, a, Type.PTR, Slot.bits(memory, b) + Slot.bits(memory, c));
-        case LOAD8 -> Slot.write(memory, a, Type.UBYTE, Byte.toUnsignedLong(memory.load8(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES))));
-        case LOAD16 -> Slot.write(memory, a, Type.USHORT, Short.toUnsignedLong(memory.load16(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES))));
-        case LOAD32 -> Slot.write(memory, a, Type.UINT, Integer.toUnsignedLong(memory.load32(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES))));
-        case LOAD64 -> Slot.write(memory, a, Type.ULONG, memory.load64(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case STORE8 -> memory.store8(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES), (byte) Slot.bits(memory, a));
-        case STORE16 -> memory.store16(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES), (short) Slot.bits(memory, a));
-        case STORE32 -> memory.store32(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES), (int) Slot.bits(memory, a));
-        case STORE64 -> memory.store64(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES), Slot.bits(memory, a));
-        case BOUNDS -> {
-          long index = Slot.bits(memory, a), length = Slot.bits(memory, b);
-          if (index < 0 || index >= length) {
-            throw new IndexOutOfBoundsException("ELX index " + index + " / " + length);
-          }
-        }
-        case CX_SAFEPOINT -> safePoint();
-        case TRAP -> throw new IllegalStateException("ELX trap " + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES) + " at word " + pc);
-        case JUMP -> pcs[frame] = pc + Instr.jumpOffset(word) / Instr.WORD_BYTES;
-        case CX_BR_TRUE -> {
-          if (condition(a)) {
-            pcs[frame] = pc + Instr.branchOffset(word) / Instr.WORD_BYTES;
-          }
-        }
-        case CX_BR_FALSE -> {
-          if (!condition(a)) {
-            pcs[frame] = pc + Instr.branchOffset(word) / Instr.WORD_BYTES;
-          }
-        }
-        case CX_CALL -> {
-          safePoint();
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          callValue(a, b, c, Instr.argumentCount(control), Instr.resultCount(control));
-        }
-        case CX_RETURN -> finish(Instr.a(word), Instr.b(word));
-        case CX_EX_CALL -> hostCall(a, b, c, base, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case CX_EX_GET -> {
-          safePoint();
-          external.nget(Slot.bits(memory, b), Slot.bits(memory, c), a);
-        }
-        case CX_EX_SET -> {
-          safePoint();
-          external.nset(Slot.bits(memory, a), Slot.bits(memory, b), c);
-        }
-        case CX_EX_ADDRESS -> {
-          safePoint();
-          long pointer = external.naddress(Slot.bits(memory, b), Slot.bits(memory, c));
-          Slot.write(memory, a, Type.PTR, pointer);
-        }
-        case CX_EX_RETAIN -> external.retain(Slot.bits(memory, a));
-        case CX_EX_RELEASE -> external.release(Slot.bits(memory, a));
-        case CX_ADD -> dynamicAdd(a, b, c);
-        case CX_SUB -> dynamicSub(a, b, c);
-        case CX_MUL -> dynamicMul(a, b, c);
-        case CX_DIV -> dynamicDiv(a, b, c);
-        case CX_REM -> dynamicRem(a, b, c);
-        case CX_AND -> dynamicAnd(a, b, c);
-        case CX_OR -> dynamicOr(a, b, c);
-        case CX_XOR -> dynamicXor(a, b, c);
-        case CX_SHL -> dynamicShl(a, b, c);
-        case CX_SHR -> dynamicShr(a, b, c);
-        case CX_USHR -> dynamicUshr(a, b, c);
-        case CX_GET_INDEX_CONST ->
-            readIndex(a, b, Slot.address(linker.constants(id), memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case CX_BR_CMP -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          if (branchCompare(a, b, c, control)) {
+        case BR_COMPARE -> {
+          if (operations.test(b, c, extension & 255, a) == ((extension & Instr.BRANCH_FALSE) == 0)) {
             pcs[frame] = pc + memory.load32(instructionBase + (long) (pc + 2) * Instr.WORD_BYTES) / Instr.WORD_BYTES;
           }
         }
-        case CX_ADD_CONST ->
-            dynamicAdd(a, b, Slot.address(linker.constants(id), memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case CX_SUB_CONST ->
-            dynamicSub(a, b, Slot.address(linker.constants(id), memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES)));
-        case CX_CMP -> dynamicCmp(a, b, c, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case CX_DEREF -> {
-          int wanted = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          if (Slot.type(memory, b) == Type.FUNCTION) {
-            if (wanted != 1) {
-              throw new IllegalArgumentException("A function address expands to one value");
-            }
-            Slot.write(memory, a, Type.PTR, Pointers.local(heap, frameTokens[frame], Instr.b(word)));
-            break;
-          }
-          int count = Pointers.dereferenceCount(memory, b);
-          if (wanted > count) {
-            throw new IllegalArgumentException("Unpack needs " + wanted + " values, sequence has " + count);
-          }
-          Slot.copy(memory, a, pointerData(b), wanted);
+        case CALL -> {
+          safePoint();
+          callValue(a, b, c, Instr.argumentCount(extension), Instr.resultCount(extension));
         }
-        case CX_RETURN_DEREF -> {
-          int count = Instr.b(word) == 1 ? Pointers.argumentCount(memory, a) : Pointers.dereferenceCount(memory, a);
+        case CALL_PACKED -> packedCall(a, b, c, extension);
+        case CALL_NAMED -> namedCall(a, b, c, linker.image(id).callSite(extension));
+        case RETURN -> finish(Instr.a(word), Instr.b(word));
+        case RETURN0 -> finish(0, 0);
+        case RETURN1 -> finish(Instr.a(word), 1);
+        case RETURN_UNPACK -> {
+          int count = Pointers.dereferenceCount(memory, a);
           if (count > MAX_RESULTS) {
-            throw new IllegalArgumentException("At most four return values are supported");
+            throw new IllegalArgumentException("At most sixteen return values are supported");
           }
-          finishValues(Instr.b(word) == 1 ? Pointers.argumentData(heap, a, frameTokens, bases, depth) : pointerData(a), count);
+          finishValues(pointerData(a), count);
         }
-        case CX_APPEND_DEREF -> {
-          long target = Slot.bits(memory, a), data = pointerData(b);
+        case UNPACK -> {
+          int count = Pointers.dereferenceCount(memory, b);
+          if (extension > count) {
+            throw new IllegalArgumentException("Unpack needs " + extension + " values, sequence has " + count);
+          }
+          Slot.copy(memory, a, pointerData(b), extension);
+        }
+        case APPEND_UNPACK -> {
           int count = Pointers.dereferenceCount(memory, b);
           for (int i = 0; i < count; i++) {
-            ElxList.append(heap, target, Slot.address(data, i));
+            ElxList.append(heap, Slot.bits(memory, a), Slot.address(pointerData(b), i));
           }
         }
-        case CX_CALL_PACKED -> {
+        case LOCALREF -> Slot.write(memory, a, Type.PTR, Pointers.local(heap, frameTokens[frame], Instr.b(word)));
+        case INDEXREF -> {
           safePoint();
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          boolean list = (control & 256) != 0;
-          int count = list ? Pointers.argumentCount(memory, c) : Pointers.dereferenceCount(memory, c);
-          if (count > 255) {
-            throw new IllegalArgumentException("Call argument count exceeds 255");
-          }
-          callValue(a, b, list ? Pointers.argumentData(heap, c, frameTokens, bases, depth) : pointerData(c), count, control & 255);
+          long ptr = Slot.type(memory, b) == Type.EXTERNAL
+              ? external.naddress(Slot.bits(memory, b), Slot.bits(memory, c)) : Pointers.indexed(heap, b, c);
+          Slot.write(memory, a, Type.PTR, ptr);
         }
-        case CX_INCR -> {
-          if (!operatorHook(Op.CX_INCR.ordinal(), a, b, b)) {
-            ValueOperations.increment(memory, a, b, 1);
-          }
-        }
-        case CX_DECR -> {
-          if (!operatorHook(Op.CX_DECR.ordinal(), a, b, b)) {
-            ValueOperations.increment(memory, a, b, -1);
-          }
-        }
-        case CX_POS -> {
-          if (!operatorHook(Op.CX_POS.ordinal(), a, b, b)) {
-            ValueOperations.operator(heap, Op.CX_POS.ordinal(), a, b, b);
-          }
-        }
-        case CX_CLOSURE -> createClosure(a, b, c, memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES));
-        case CX_GET_CAPTURE ->
-            Slot.copy(memory, a, Slot.address(handles[frame], memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES) + 1), Instr.b(word));
-        case CX_SET_CAPTURE ->
-            Slot.copy(memory, Slot.address(handles[frame], memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES) + 1), a, Instr.b(word));
-        case CX_GET_INDEX -> readIndex(a, b, c);
-        case CX_SET_INDEX -> writeIndex(a, b, c);
-        case CX_SET_META -> {
+        case GLOBALREF -> Slot.write(memory, a, Type.PTR, Pointers.global(heap, globals, b));
+        case UPVALREF -> Slot.write(memory, a, Type.PTR, Pointers.capture(heap, handles[frame], Instr.b(word)));
+        case CONSTREF ->
+            Slot.write(memory, a, Type.PTR, Pointers.constant(heap, linker.constants(id), Instr.index(word)));
+        case GETREF -> Slot.copy(memory, a, pointerData(b), 1);
+        case SETREF -> pointerWrite(a, b);
+        case TYPE -> Slot.write(memory, a, Type.UBYTE, Byte.toUnsignedInt(Slot.type(memory, b).tag()));
+        case CONVERT -> convertValue(a, b, Instr.c(word));
+        case TOSTRING -> Slot.write(memory, a, Type.STRING, heap.strings().importJava(format(b)));
+        case LEN -> Slot.write(memory, a, Type.INT, Slot.type(memory, b) == Type.STRING
+            ? heap.strings().codePointLength(Slot.bits(memory, b)) : RawValues.length(memory, b));
+        case HASH -> Slot.write(memory, a, Type.LONG, operations.hashValue(b));
+        case SETMETA -> {
           if (Slot.type(memory, b) != Type.TABLE || (Slot.type(memory, c) != Type.TABLE && Slot.type(memory, c) != Type.NULL)) {
             throw new IllegalArgumentException("setmetatable requires table and table/null");
           }
-          long table = Slot.bits(memory, b), meta = Slot.type(memory, c) == Type.NULL ? 0 : Slot.bits(memory, c);
-          ElxTable.setMetatable(heap, table, meta);
+          long table = Slot.bits(memory, b);
+          ElxTable.setMetatable(heap, table, Slot.type(memory, c) == Type.NULL ? 0 : Slot.bits(memory, c));
           Slot.write(memory, a, Type.TABLE, table);
         }
-        case CX_GET_META -> {
+        case GETMETA -> {
           if (Slot.type(memory, b) != Type.TABLE) {
             throw new IllegalArgumentException("getmetatable requires table");
           }
           long meta = ElxTable.metatable(memory, Slot.bits(memory, b));
           Slot.write(memory, a, meta == 0 ? Type.NULL : Type.TABLE, meta);
         }
-        case CX_NEXT -> nextValue(a, b, c);
-        case CX_IADD_CONST -> {
-          Type kind = Type.fromTag((byte) Instr.c(word));
-          Slot.write(memory, a, kind, Type.normalize(Slot.bits(memory, b) + memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES), kind));
-        }
-        case CX_BR_ICMP -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          Type kind = Instr.type(control);
-          long x = Type.normalize(Slot.bits(memory, a), kind), y = Type.normalize(Slot.bits(memory, b), kind);
-          if (compare(Long.compare(x, y), Instr.relation(control))) {
-            pcs[frame] = pc + memory.load32(instructionBase + (long) (pc + 2) * Instr.WORD_BYTES) / Instr.WORD_BYTES;
-          }
-        }
-        case CX_LOAD64_INDEXED -> Slot.write(memory, a, Type.ULONG, memory.load64(Slot.bits(memory, b) + Slot.bits(memory, c) * Long.BYTES));
-        case CX_COPY_MEMORY -> memory.copyBytes(Slot.bits(memory, a), Slot.bits(memory, b), Math.toIntExact(Slot.bits(memory, c)));
-        case CX_EX_CALL0 -> {
-          safePoint();
-          int count;
-          if (Slot.type(memory, b) == Type.FUNCTION) {
-            long function = Slot.bits(memory, b);
-            if (linker.id(function) >= 0) {
-              throw new IllegalArgumentException("CX_EX_CALL0 requires a native function");
-            }
-            count = callNative(function, 0, 0, a, 1);
-          } else {
-            count = external.ncall(Slot.bits(memory, b), Slot.bits(memory, c), 0, 0, a, 1);
-          }
-          if (count < 0) {
-            throw new IllegalStateException("External call failed: " + count);
-          }
-          clearResults(a, count, 1);
-        }
-        case CX_HASH -> Slot.write(memory, a, Type.LONG, ValueOperations.hash(memory, b));
-        case CX_EQUAL -> {
-          if (!operatorHook(Op.CX_EQUAL.ordinal(), a, b, c)) {
-            Slot.write(memory, a, Type.BOOL, ValueOperations.equal(memory, b, c) ? 1 : 0);
-          }
-        }
-        case CX_OPERATOR -> {
-          int control = memory.load32(instructionBase + (long) (pc + 1) * Instr.WORD_BYTES);
-          if (!operatorHook(control, a, b, c)) {
-            ValueOperations.operator(heap, control, a, b, c);
-          }
-        }
-        case CX_GET_TABLE -> ElxTable.get(memory, Slot.bits(memory, b), c, a);
-        case CX_SET_TABLE -> ElxTable.set(heap, Slot.bits(memory, a), b, c);
-        case CX_LIST_APPEND -> ElxList.append(heap, Slot.bits(memory, a), b);
-        case CX_GET_TABLE_IKV -> ElxTable.next(memory, a, Slot.bits(memory, b), Slot.bits(memory, c));
-        case CX_GET_LIST_IV -> ElxList.next(memory, a, Slot.bits(memory, b), Slot.bits(memory, c));
+        case SAFEPOINT -> safePoint();
       }
     }
   }
 
-  private void environmentCall(long serviceSlot, long args, long results, int control) {
+  private void packedCall(long result, long function, long sequence, int control) {
     safePoint();
-    long service = Slot.bits(memory, serviceSlot);
-    int count = Instr.argumentCount(control), capacity = Instr.resultCount(control);
-    if (linker.id(service) >= 0) {
-      throw new IllegalArgumentException("ECALL requires an execution-environment service address");
-    }
-    int returned = external.ncall(linker.nativeTarget(service), 0, args, count, results, capacity);
-    if (returned < 0) {
-      throw new IllegalStateException("Execution-environment service failed: " + returned);
-    }
-    clearResults(results, returned, capacity);
-  }
-
-  private void hostCall(long result, long target, long member, long base, int control) {
-    runtimeHostCall(result, target, member, Slot.address(base, Instr.argumentBase(control)), control);
-  }
-
-  void runtimeHostCall(long result, long target, long member, long args, int control) {
-    safePoint();
-    int capacity = Instr.resultCount(control), count;
-    if (Slot.type(memory, target) == Type.FUNCTION) {
-      long function = Slot.bits(memory, target);
-      if (linker.id(function) >= 0) {
-        throw new IllegalArgumentException("CX_EX_CALL requires a native function");
-      }
-      count = callNative(function, args, Instr.argumentCount(control), result, capacity);
-    } else {
-      count = external.ncall(Slot.bits(memory, target), Slot.bits(memory, member), args, Instr.argumentCount(control), result, capacity);
-    }
-    if (count < 0) {
-      throw new IllegalStateException("External call failed: " + count);
-    }
-    clearResults(result, count, capacity);
-  }
-
-  void runtimeCall(long result, long function, long args, int count, int capacity) {
-    if (count < 0 || count > 255) {
+    boolean list = (control & 256) != 0;
+    int count = list ? Pointers.argumentCount(memory, sequence) : Pointers.dereferenceCount(memory, sequence);
+    if (count > 255) {
       throw new IllegalArgumentException("Call argument count exceeds 255");
     }
-    callValue(result, function, args, count, capacity);
-  }
-
-  void runtimeReturn(long data, int count) {
-    if (count < 0 || count > MAX_RESULTS) {
-      throw new IllegalArgumentException("At most four return values are supported");
-    }
-    finishValues(data, count);
+    callValue(result, function, list ? Pointers.argumentData(heap, sequence, frameTokens, bases, depth) : pointerData(sequence),
+        count, control & 255);
   }
 
   void runtimeConvert(long result, long source, int kind) {
     int stop = depth;
     convertValue(result, source, kind);
     completeRuntimeHook(stop);
-  }
-
-  void runtimeAllocate(long result, long bytes, long layout) {
-    Slot.write(memory, result, Type.PTR, heap.allocate(LAYOUTS[Math.toIntExact(Slot.bits(memory, layout))], Math.toIntExact(Slot.bits(memory, bytes))));
-  }
-
-  void runtimePoll() {
-    safePoint();
-  }
-
-  private void indirectCall(long result, long function, long args, long base, int control) {
-    safePoint();
-    int count = Math.toIntExact(Slot.bits(memory, Slot.address(base, control & 255)));
-    if (count < 0 || count > 255) {
-      throw new IllegalArgumentException("Call argument count exceeds 255");
-    }
-    callValue(result, function, Slot.bits(memory, args), count, (control >>> 8) & 255);
   }
 
   private void createClosure(long a, long b, long c, int count) {
@@ -1220,39 +980,48 @@ public final class VM implements AutoCloseable {
     Slot.write(memory, a, Type.FUNCTION, closure);
   }
 
-  private void nextValue(long a, long b, long c) {
-    Type type = Slot.type(memory, b);
-    long pointer = Slot.bits(memory, b), cursor = Slot.bits(memory, c);
-    if (type == Type.TABLE) {
-      ElxTable.next(memory, a, pointer, cursor);
-    } else if (type == Type.LIST) {
-      ElxList.next(memory, a + Slot.SIZE, pointer, cursor);
-      Slot.copy(memory, a, a + Slot.SIZE, 1);
-    } else {
-      throw new IllegalArgumentException("Not iterable: " + type);
+  private void convertValue(long out, long source, int type) {
+    Type target = Type.fromTag((byte) type), actual = Slot.type(memory, source);
+    if (actual == Type.VOID) {
+      if (target.numeric()) {
+        Slot.write(memory, out, target, 0);
+      } else if (target == Type.STRING) {
+        Slot.write(memory, out, target, heap.strings().importJava(""));
+      } else if (target == Type.LIST) {
+        Slot.write(memory, out, target, ElxList.create(heap));
+      } else if (target == Type.TABLE) {
+        Slot.write(memory, out, target, ElxTable.create(heap));
+      } else if (target == Type.NULL) {
+        Slot.write(memory, out, target, 0);
+      } else if (target == Type.FUNCTION) {
+        Slot.write(memory, out, target, function(call -> {
+        }));
+      } else {
+        Slot.write(memory, out, Type.VOID, 0);
+      }
+      return;
     }
-  }
-
-  private void convertValue(long a, long b, int type) {
-    Type target = Type.fromTag((byte) type);
-    if (target == Type.BOOL && Slot.type(memory, b) == Type.TABLE) {
-      long hook = ElxTable.hook(memory, Slot.bits(memory, b), Metamethod.BOOL.ordinal());
-      if (hook == 0) {
-        throw new IllegalArgumentException("Table has no __bool__ conversion");
-      }
-      long args = hookArguments(1);
-      Slot.copy(memory, args, b, 1);
-      invokeHook(hook, a, 1, 1, Type.BOOL.ordinal());
-    } else if (target == Type.BOOL && Slot.type(memory, b) == Type.EXTERNAL) {
-      long args = hookArguments(1);
-      Slot.copy(memory, args, b, 1);
-      safePoint();
-      int returned = external.nmeta(Slot.bits(memory, b), Metamethod.BOOL, args, 1, a, 1);
-      if (returned != 1 || Slot.type(memory, a) != Type.BOOL) {
-        throw new IllegalArgumentException("External bool metamethod must return one BOOL");
+    if (target == Type.BOOL && (actual == Type.TABLE || actual == Type.EXTERNAL)) {
+      try (Slots.Scope arguments = borrowSlots(1)) {
+        long args = Slots.address(arguments, 0);
+        Slot.copy(memory, args, source, 1);
+        int returned;
+        if (actual == Type.EXTERNAL) {
+          safePoint();
+          returned = external.nmeta(Slot.bits(memory, args), Metamethod.BOOL, args, 1, out, 1);
+        } else {
+          long hook = ElxTable.hook(memory, Slot.bits(memory, args), Metamethod.BOOL.ordinal());
+          if (hook == 0) {
+            throw new IllegalArgumentException("Table has no bool conversion");
+          }
+          returned = executeHook(Slot.bits(memory, hook), args, 1, out, 1);
+        }
+        if (returned != 1 || Slot.type(memory, out) != Type.BOOL) {
+          throw new IllegalArgumentException("bool metamethod must return one BOOL");
+        }
       }
     } else {
-      Slot.write(memory, a, target, Type.cast(Slot.bits(memory, b), Slot.type(memory, b), target));
+      Slot.write(memory, out, target, Type.cast(Slot.bits(memory, source), actual, target));
     }
   }
 
@@ -1403,9 +1172,7 @@ public final class VM implements AutoCloseable {
           throw new IllegalArgumentException("Missing argument '" + parameters.names().get(i) + "'");
         }
       }
-      int returned = execute(function, bound, fixed + extra);
-      Slot.copy(memory, destination, results(), returned);
-      clearResults(destination, returned, MAX_RESULTS);
+      executeHook(function, bound, fixed + extra, destination, site.resultCapacity());
     } finally {
       regs.leave();
     }
@@ -1421,175 +1188,6 @@ public final class VM implements AutoCloseable {
       throw new IllegalArgumentException("Duplicate argument '" + name + "'");
     }
     Slot.copy(memory, destination, value, 1);
-  }
-
-  // Keep the dispatch loop below HotSpot's huge-method compilation limit.
-  private void dynamicAdd(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x + y, kind));
-    } else if (kind == right && kind == Type.FLOAT) {
-      Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(Slot.getFloat(memory, b) + Slot.getFloat(memory, c))));
-    } else if (kind == right && kind == Type.DOUBLE) {
-      Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) + Slot.getDouble(memory, c)));
-    } else if (!operatorHook(Op.IADD.ordinal(), a, b, c)) {
-      if (kind == Type.STRING || right == Type.STRING) {
-        Slot.write(memory, a, Type.STRING, heap.importString(format(b) + format(c)));
-      } else {
-        ValueOperations.operator(heap, Op.IADD.ordinal(), a, b, c);
-      }
-    }
-  }
-
-  private void dynamicSub(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x - y, kind));
-    } else if (kind == right && kind == Type.FLOAT) {
-      Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(Slot.getFloat(memory, b) - Slot.getFloat(memory, c))));
-    } else if (kind == right && kind == Type.DOUBLE) {
-      Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) - Slot.getDouble(memory, c)));
-    } else if (!operatorHook(Op.ISUB.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.ISUB.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicMul(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x * y, kind));
-    } else if (kind == right && kind == Type.FLOAT) {
-      Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(Slot.getFloat(memory, b) * Slot.getFloat(memory, c))));
-    } else if (kind == right && kind == Type.DOUBLE) {
-      Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) * Slot.getDouble(memory, c)));
-    } else if (!operatorHook(Op.IMUL.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.IMUL.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicDiv(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(kind.unsigned() ? Long.divideUnsigned(x, y) : x / y, kind));
-    } else if (kind == right && kind == Type.FLOAT) {
-      Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(Slot.getFloat(memory, b) / Slot.getFloat(memory, c))));
-    } else if (kind == right && kind == Type.DOUBLE) {
-      Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) / Slot.getDouble(memory, c)));
-    } else if (!operatorHook(Op.IDIV.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.IDIV.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicRem(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(kind.unsigned() ? Long.remainderUnsigned(x, y) : x % y, kind));
-    } else if (kind == right && kind == Type.FLOAT) {
-      Slot.write(memory, a, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(Slot.getFloat(memory, b) % Slot.getFloat(memory, c))));
-    } else if (kind == right && kind == Type.DOUBLE) {
-      Slot.write(memory, a, kind, Double.doubleToRawLongBits(Slot.getDouble(memory, b) % Slot.getDouble(memory, c)));
-    } else if (!operatorHook(Op.IREM.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.IREM.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicAnd(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x & y, kind));
-    } else if (!operatorHook(Op.BAND.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.BAND.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicOr(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x | y, kind));
-    } else if (!operatorHook(Op.BOR.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.BOR.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicXor(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x ^ y, kind));
-    } else if (!operatorHook(Op.BXOR.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.BXOR.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicShl(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x << ((int) y & (kind.width() - 1)), kind));
-    } else if (!operatorHook(Op.SHL.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.SHL.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicShr(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize(x >> ((int) y & (kind.width() - 1)), kind));
-    } else if (!operatorHook(Op.SHR.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.SHR.ordinal(), a, b, c);
-    }
-  }
-
-  private void dynamicUshr(long a, long b, long c) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      Slot.write(memory, a, kind, Type.normalize((kind.width() == 64 ? x : x & (-1L >>> (64 - kind.width()))) >>> ((int) y & (kind.width() - 1)), kind));
-    } else if (!operatorHook(Op.USHR.ordinal(), a, b, c)) {
-      ValueOperations.operator(heap, Op.USHR.ordinal(), a, b, c);
-    }
-  }
-
-  private boolean branchCompare(long scratch, long left, long right, int control) {
-    Type kind = Slot.type(memory, left), other = Slot.type(memory, right);
-    Instr.Relation relation = Instr.relation(control);
-    boolean result;
-    if (kind == other && kind.integer()) {
-      long x = Slot.bits(memory, left), y = Slot.bits(memory, right);
-      result = compare(kind.unsigned() ? Long.compareUnsigned(x, y) : Long.compare(x, y), relation);
-    } else if (kind == other && kind.numeric()) {
-      result = compareFloat(Type.asDouble(Slot.bits(memory, left), kind), Type.asDouble(Slot.bits(memory, right), kind), relation);
-    } else {
-      // Only overloaded comparisons need a materialized result and a synchronous slow-path hook.
-      runtimeOperator(Instr.operator(Op.ICMP, relation), scratch, left, right);
-      result = condition(scratch);
-    }
-    return result == ((control & Instr.BRANCH_FALSE) == 0);
-  }
-
-  private void dynamicCmp(long a, long b, long c, int control) {
-    Type kind = Slot.type(memory, b), right = Slot.type(memory, c);
-    Instr.Relation relation = Instr.relation(control);
-    if (kind == right && kind.integer()) {
-      long x = Slot.bits(memory, b), y = Slot.bits(memory, c);
-      int comparison = kind.unsigned() ? Long.compareUnsigned(x, y) : Long.compare(x, y);
-      Slot.write(memory, a, Type.BOOL, compare(comparison, relation) ? 1 : 0);
-    } else if (kind == right && kind.numeric()) {
-      Slot.write(memory, a, Type.BOOL, compareFloat(Type.asDouble(Slot.bits(memory, b), kind), Type.asDouble(Slot.bits(memory, c), kind), relation) ? 1 : 0);
-    } else {
-      int comparison = Instr.operator(Op.ICMP, relation);
-      if (!operatorHook(comparison, a, b, c)) {
-        ValueOperations.operator(heap, comparison, a, b, c);
-      }
-    }
   }
 
   private long hookArguments(int count) {
@@ -1649,24 +1247,6 @@ public final class VM implements AutoCloseable {
     }
   }
 
-  void runtimeOperator(int control, long result, long left, long right) {
-    int stop = depth;
-    if (operatorHook(control, result, left, right)) {
-      completeRuntimeHook(stop);
-      return;
-    }
-    Op op = Instr.op(control);
-    if (op == Op.IADD && (Slot.type(memory, left) == Type.STRING || Slot.type(memory, right) == Type.STRING)) {
-      Slot.write(memory, result, Type.STRING, heap.importString(format(left) + format(right)));
-    } else if (op == Op.CX_INCR || op == Op.CX_DECR) {
-      ValueOperations.increment(memory, result, left, op == Op.CX_INCR ? 1 : -1);
-    } else if (op == Op.CX_EQUAL) {
-      Slot.write(memory, result, Type.BOOL, ValueOperations.equal(memory, left, right) ? 1 : 0);
-    } else {
-      ValueOperations.operator(heap, control, result, left, right);
-    }
-  }
-
   void runtimeReadIndex(long result, long target, long key) {
     int stop = depth;
     readIndex(result, target, key);
@@ -1687,103 +1267,147 @@ public final class VM implements AutoCloseable {
     namedCall(result, function, args, linker.image(linker.id(context)).callSite(site));
   }
 
-  void runtimeNext(long result, long target, long cursor) {
-    nextValue(result, target, cursor);
-  }
-
-  private boolean operatorHook(int control, long result, long left, long right) {
-    int method = Metamethod.operator(control);
+  boolean operatorHook(Op op, int relation, long result, long left, long right) {
+    int method = Metamethod.operator(op, relation);
     if (method < 0) {
       return false;
     }
-    Type leftType = Slot.type(memory, left), rightType = Slot.type(memory, right);
-    if (leftType == Type.EXTERNAL || rightType == Type.EXTERNAL) {
-      long target = leftType == Type.EXTERNAL ? left : right;
-      Op op = Instr.op(control);
-      int count = op == Op.INEG || op == Op.FNEG || op == Op.BNOT || op == Op.CX_BOOL_NOT
-          || op == Op.CX_POS || op == Op.CX_INCR || op == Op.CX_DECR ? 1 : 2;
-      long args = hookArguments(count);
+    boolean unary = op == Op.NEG || op == Op.POS || op == Op.BNOT || op == Op.NOT || op == Op.INC || op == Op.DEC || op == Op.HASH;
+    int count = unary ? 1 : 2;
+    try (Slots.Scope arguments = borrowSlots(count)) {
+      long args = Slots.address(arguments, 0);
       Slot.copy(memory, args, left, 1);
-      if (count == 2) {
+      if (!unary) {
         Slot.copy(memory, args + Slot.SIZE, right, 1);
       }
-      safePoint();
-      int returned = external.nmeta(Slot.bits(memory, target), Metamethod.at(method), args, count, result, 1);
-      if (returned != 1) {
-        throw new IllegalArgumentException("External metamethod " + Metamethod.at(method)
-            + " must return one value, got " + returned);
+      for (int side = 0; side < (unary ? 1 : 2); side++) {
+        long target = Slot.address(args, side);
+        Type type = Slot.type(memory, target);
+        int returned = 0;
+        boolean invert = false;
+        if (type == Type.EXTERNAL) {
+          safePoint();
+          returned = external.nmeta(Slot.bits(memory, target), Metamethod.at(method), args, count, result, 1);
+          if (returned == 0 && method == Metamethod.NE.ordinal()) {
+            returned = external.nmeta(Slot.bits(memory, target), Metamethod.EQ, args, count, result, 1);
+            invert = returned != 0;
+          }
+        } else if (type == Type.TABLE) {
+          long hook = ElxTable.hook(memory, Slot.bits(memory, target), method);
+          if (hook == 0 && method == Metamethod.NE.ordinal()) {
+            hook = ElxTable.hook(memory, Slot.bits(memory, target), Metamethod.EQ.ordinal());
+            invert = hook != 0;
+          }
+          if (hook != 0) {
+            returned = executeHook(Slot.bits(memory, hook), args, count, result, 1);
+          }
+        }
+        if (returned == 0) {
+          continue;
+        }
+        if (returned != 1) {
+          throw new IllegalArgumentException("Metamethod " + Metamethod.at(method) + " must return one value");
+        }
+        if (Metamethod.at(method).booleanResult() && Slot.type(memory, result) != Type.BOOL) {
+          throw new IllegalArgumentException("Metamethod " + Metamethod.at(method) + " must return BOOL");
+        }
+        if (invert) {
+          Slot.write(memory, result, Type.BOOL, Slot.bits(memory, result) == 0 ? 1 : 0);
+        }
+        return true;
       }
-      if (Metamethod.at(method).booleanResult() && Slot.type(memory, result) != Type.BOOL) {
-        throw new IllegalArgumentException("External metamethod " + Metamethod.at(method)
-            + " must return BOOL");
+    }
+    return false;
+  }
+
+  private int executeHook(long function, long arguments, int count, long destination, int capacity) {
+    int returned = execute(function, arguments, count), copied = Math.min(returned, capacity);
+    if (copied > 0) {
+      Slot.copy(memory, destination, results(), copied);
+    }
+    clearResults(destination, copied, capacity);
+    return returned;
+  }
+
+  int callSynchronously(long callable, long inputs, int count, long outputs, int capacity) {
+    if (capacity > MAX_RESULTS) {
+      throw new IllegalArgumentException("At most sixteen result slots are supported");
+    }
+    Type type = Slot.type(memory, callable);
+    if (type == Type.FUNCTION) {
+      return Math.min(executeHook(Slot.bits(memory, callable), inputs, count, outputs, capacity), capacity);
+    }
+    if (type != Type.TABLE && type != Type.EXTERNAL) {
+      throw new IllegalArgumentException("Not callable: " + type);
+    }
+    try (Slots.Scope args = borrowSlots(count + 1)) {
+      long data = Slots.address(args, 0);
+      Slot.copy(memory, data, callable, 1);
+      if (count > 0) {
+        Slot.copy(memory, data + Slot.SIZE, inputs, count);
       }
-      return true;
-    }
-    long cell = Slot.type(memory, left) == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, left), method) : 0;
-    if (cell == 0 && Slot.type(memory, right) == Type.TABLE) {
-      cell = ElxTable.hook(memory, Slot.bits(memory, right), method);
-    }
-    boolean invert = false;
-    if (cell == 0 && method == Metamethod.NE.ordinal()) {
-      cell = Slot.type(memory, left) == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, left), Metamethod.EQ.ordinal()) : 0;
-      if (cell == 0 && Slot.type(memory, right) == Type.TABLE) {
-        cell = ElxTable.hook(memory, Slot.bits(memory, right), Metamethod.EQ.ordinal());
+      if (type == Type.EXTERNAL) {
+        int returned = external.nmeta(Slot.bits(memory, data), Metamethod.CALL, data, count + 1, outputs, capacity);
+        clearResults(outputs, Math.min(returned, capacity), capacity);
+        return Math.min(returned, capacity);
       }
-      invert = cell != 0;
+      long hook = ElxTable.hook(memory, Slot.bits(memory, data), Metamethod.CALL.ordinal());
+      if (hook == 0) {
+        throw new IllegalArgumentException("Table is not callable: missing call metamethod");
+      }
+      return Math.min(executeHook(Slot.bits(memory, hook), data, count + 1, outputs, capacity), capacity);
     }
-    if (cell == 0) {
-      return false;
-    }
-    Op op = Instr.op(control);
-    int count = op == Op.INEG || op == Op.FNEG || op == Op.BNOT || op == Op.CX_BOOL_NOT || op == Op.CX_POS || op == Op.CX_INCR || op == Op.CX_DECR ? 1 : 2;
-    long args = hookArguments(count);
-    Slot.copy(memory, args, left, 1);
-    if (count == 2) {
-      Slot.copy(memory, args + Slot.SIZE, right, 1);
-    }
-    invokeHook(cell, result, count, 1, Metamethod.at(method).booleanResult() ? Type.BOOL.ordinal() | (invert ? INVERT_RESULT : 0) : -1);
-    return true;
   }
 
   private void readIndex(long result, long target, long key) {
-    if (Slot.type(memory, target) == Type.EXTERNAL) {
-      if (Slot.type(memory, key) != Type.STRING) {
-        throw new IllegalArgumentException("Host member name must be STRING");
-      }
+    Type type = Slot.type(memory, target);
+    if (type == Type.EXTERNAL) {
       safePoint();
       external.nget(Slot.bits(memory, target), Slot.bits(memory, key), result);
       return;
     }
-    long hook = Slot.type(memory, target) == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, target), Metamethod.GET.ordinal()) : 0;
-    if (hook == 0) {
-      ValueOperations.getIndex(memory, target, key, result);
+    if (type == Type.TABLE) {
+      readTableIndex(result, Slot.bits(memory, target), key);
       return;
     }
-    long args = hookArguments(2);
-    Slot.copy(memory, args, target, 1);
-    Slot.copy(memory, args + Slot.SIZE, key, 1);
-    invokeHook(hook, result, 2, 1, -1);
+    RawValues.getIndex(memory, target, key, result);
+  }
+
+  private void readTableIndex(long result, long table, long key) {
+    long hook = ElxTable.hook(memory, table, Metamethod.GET.ordinal());
+    if (hook == 0) {
+      ElxTable.get(memory, table, key, result);
+      return;
+    }
+    try (Slots.Scope args = borrowSlots(2)) {
+      long data = Slots.address(args, 0);
+      Slot.write(memory, data, Type.TABLE, table);
+      Slot.copy(memory, data + Slot.SIZE, key, 1);
+      if (executeHook(Slot.bits(memory, hook), data, 2, result, 1) != 1) {
+        throw new IllegalArgumentException("GET metamethod must return one value");
+      }
+    }
   }
 
   private void writeIndex(long target, long key, long value) {
-    if (Slot.type(memory, target) == Type.EXTERNAL) {
-      if (Slot.type(memory, key) != Type.STRING) {
-        throw new IllegalArgumentException("Host member name must be STRING");
-      }
+    Type type = Slot.type(memory, target);
+    if (type == Type.EXTERNAL) {
       safePoint();
       external.nset(Slot.bits(memory, target), Slot.bits(memory, key), value);
       return;
     }
-    long hook = Slot.type(memory, target) == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, target), Metamethod.SET.ordinal()) : 0;
+    long hook = type == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, target), Metamethod.SET.ordinal()) : 0;
     if (hook == 0) {
-      ValueOperations.setIndex(heap, target, key, value);
+      RawValues.setIndex(heap, target, key, value);
       return;
     }
-    long args = hookArguments(3);
-    Slot.copy(memory, args, target, 1);
-    Slot.copy(memory, args + Slot.SIZE, key, 1);
-    Slot.copy(memory, args + 2L * Slot.SIZE, value, 1);
-    invokeHook(hook, 0, 3, 0, -1);
+    try (Slots.Scope args = borrowSlots(3)) {
+      long data = Slots.address(args, 0);
+      Slot.copy(memory, data, target, 1);
+      Slot.copy(memory, data + Slot.SIZE, key, 1);
+      Slot.copy(memory, data + 2L * Slot.SIZE, value, 1);
+      executeHook(Slot.bits(memory, hook), data, 3, 0, 0);
+    }
   }
 
   private void callValue(long destination, long function, long args, int count, int capacity) {
@@ -1801,8 +1425,7 @@ public final class VM implements AutoCloseable {
       invokeHook(hook, destination, count + 1, capacity, -1);
     } else if (Slot.type(memory, function) == Type.EXTERNAL) {
       safePoint();
-      int returned = external.nmeta(Slot.bits(memory, function), Metamethod.CALL, args, count,
-          destination, capacity);
+      int returned = callSynchronously(function, args, count, destination, capacity);
       if (returned < 0 || returned > capacity) {
         throw new IllegalStateException("External call returned an invalid result count: " + returned);
       }

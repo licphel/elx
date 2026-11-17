@@ -235,18 +235,10 @@ public enum Format {
       void append(StringBuilder out, int control) {
       }
     },
-    /** Numeric type or width control. */
-    KIND {
-      @Override
-      void append(StringBuilder out, int control) {
-        out.append(" kind=").append(Instr.type(control));
-      }
-    },
-    /** Numeric type, relation, and branch-polarity control. */
+    /** Comparison relation and optional branch polarity. */
     COMPARE {
       @Override
       void append(StringBuilder out, int control) {
-        KIND.append(out, control);
         out.append(" relation=").append(Instr.relation(control));
         if ((control & Instr.BRANCH_FALSE) != 0) {
           out.append(" branch=false");
@@ -260,14 +252,6 @@ public enum Format {
         out.append(" argc=").append(Instr.argumentCount(control)).append(" results=").append(Instr.resultCount(control));
       }
     },
-    /** External-call control including the argument-base register. */
-    EX_CALL {
-      @Override
-      void append(StringBuilder out, int control) {
-        out.append(" args=r").append(Instr.argumentBase(control));
-        CALL.append(out, control);
-      }
-    },
     /** Constant-pool index control. */
     CONSTANT {
       @Override
@@ -275,13 +259,7 @@ public enum Format {
         out.append(" constant=k").append(control);
       }
     },
-    /** Dynamic operator and relation control. */
-    OPERATOR {
-      @Override
-      void append(StringBuilder out, int control) {
-        out.append(" operator=").append(control);
-      }
-    };
+    ;
 
     abstract void append(StringBuilder out, int control);
   }

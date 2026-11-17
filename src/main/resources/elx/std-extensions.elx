@@ -1,0 +1,140 @@
+local function errorTable(error) { return error; }
+local function fails(target) {
+  local ok,error = pcall(target,errorTable);
+  assert(!ok && type(error)=='table' && len(error.cause)>0,'expected protected failure');
+}
+
+local modules=['list','table','math','random','io','gc','str','sys','util','re','path','json','time','fmt'];
+for name in itr(modules) {
+  local module=require(name);
+  assert(type(module)=='table','module table: '+name);
+  assert(referenceequal(module,require(name)),'cached public module: '+name);
+  local privateLoaded=pcall(function(){return require('_n_'+name);},errorTable);
+  assert(!privateLoaded,'native backends are compile-time symbols: '+name);
+}
+local sys=require('sys');
+assert(referenceequal(sys.env,env),'sys wrapper exposes current globals');
+assert(require('math').rand==void,'random generation moved out of math');
+
+print('== random ==');
+local random=require('random');
+random.seed(12345);
+local sequence=[random.rand(-100,100),random.randl(-100000l,100000l),random.randf(),random.randd(),random.randb()];
+random.seed(12345);
+assert(sequence==[random.rand(-100,100),random.randl(-100000l,100000l),random.randf(),random.randd(),random.randb()],'seed reproduces all random types');
+assert(random.rand(2147483647,2147483647)==2147483647,'inclusive int max');
+assert(random.rand(-2147483648,-2147483648)==-2147483648,'inclusive int min');
+assert(random.randl(9223372036854775807l,9223372036854775807l)==9223372036854775807l,'inclusive long max');
+local longMin=-9223372036854775807l-1l;
+assert(random.randl(longMin,longMin)==longMin,'inclusive long min');
+for i=0,i<100,i++ {
+  assert(type(random.randl(longMin,9223372036854775807l))=='long','full long domain');
+  local value=random.rand(-3,3);
+  assert(value>=-3 && value<=3,'inclusive integer range');
+  local fraction=random.randd(-5.0,5.0);
+  assert(fraction>=-5.0 && fraction<5.0,'exclusive floating upper bound');
+}
+assert(random.randf(2.0,2.0)==2.0 && random.randd(2.0,2.0)==2.0,'degenerate floating range');
+fails(function(){random.rand(2,1);});
+fails(function(){random.randl(2l,1l);});
+fails(function(){random.randf(1.0);});
+fails(function(){random.randd(1.0);});
+fails(function(){random.randd(0.0,require('math').inf);});
+local signs={positive=false,negative=false};
+for i=0,i<100,i++ {
+  local value=random.randd(-1.0e308,1.0e308);
+  assert(value>=-1.0e308 && value<1.0e308,'floating range whose width overflows');
+  if value>0.0 {signs.positive=true;} else {signs.negative=true;}
+}
+assert(signs.positive && signs.negative,'wide floating range samples both halves');
+
+print('== path ==');
+local path=require('path');
+assert(path.normalize('a/../b')=='b','normalize path');
+assert(path.join('a','b','..','c')==path.normalize('a/c'),'join and normalize');
+assert(path.relative(path.join('a','b'),path.join('a','c'))==path.join('..','c'),'relative path');
+assert(path.name('a/archive.tar.gz')=='archive.tar.gz','path name');
+assert(path.stem('a/archive.tar.gz')=='archive.tar','path stem');
+assert(path.extension('a/archive.tar.gz')=='.gz','path extension');
+assert(path.extension('.profile')=='' && path.stem('.profile')=='.profile','hidden file');
+assert(path.parent('single')==void && path.parent('a/b')=='a','missing parent uses void');
+assert(path.isAbsolute(path.absolute('.')) && path.isAbsolute(path.cwd()),'absolute paths');
+
+print('== re ==');
+local re=require('re');
+assert(re.matches('ABC','abc',re.caseInsensitive),'regex flags');
+assert(!re.matches('xabc','abc'),'whole string matching');
+local match=re.find('😀ab12z','([a-z]+)([0-9]+)');
+assert(match.start==1 && match.end==5,'code point match offsets');
+assert(match.groups==['ab12','ab','12'],'match groups');
+assert(re.find('aaa','a',2).start==2,'find start');
+assert(re.find('aaa','z')==void,'missing match');
+assert(re.find('b','(a)?b').groups[1]==null,'unmatched group is explicit null');
+assert(len(re.findAll('a1 b22','[0-9]+'))==2,'findAll');
+assert(len(re.findAll('ab',''))==3,'zero width matches terminate');
+assert(re.replace('a1b2','([0-9])','[$1]')=='a[1]b[2]','regex replacement groups');
+assert(re.split('a  b ',' +')==['a','b',''],'regex split retains final empty');
+assert(re.matches('a.b',re.escape('a.b')),'escape regex');
+fails(function(){re.matches('x','[');});
+fails(function(){re.find('x','x',2);});
+
+print('== json ==');
+local json=require('json');
+local object=json.parse('{"name":"中😀","items":[1,true,null,{"x":2.5}],"empty":{},"list":[]}');
+assert(object.name=='中😀' && object.items[1] && object.items[2]==null,'JSON nested values and null');
+assert(type(object.empty)=='table' && type(object.list)=='list','JSON container categories');
+assert(json.parse(json.stringify(object))==object,'JSON nested roundtrip');
+assert(json.parse('null')==null && json.stringify(null)=='null','JSON root null');
+assert(json.parse('true') && json.parse('false')==false,'JSON root boolean');
+assert(json.parse(' 1.25e2 ')==125.0,'JSON fraction and exponent');
+assert(json.parse('9223372036854775807')==9223372036854775807l,'JSON long max');
+assert(json.parse('18446744073709551615')==18446744073709551615ul,'JSON unsigned long max');
+assert(json.stringify(18446744073709551615ul)=='18446744073709551615','JSON unsigned output');
+assert(json.parse('{"x":1,"x":2}').x==2,'JSON duplicate key replacement');
+assert(json.parse('"\\uD83D\\uDE00"')=='😀','JSON surrogate pair');
+local escaped='line\nquote"\\end\t';
+assert(json.parse(json.stringify(escaped))==escaped,'JSON string escaping');
+local shared={v=3};
+assert(json.parse(json.stringify([shared,shared]))==[{v=3},{v=3}],'JSON shared acyclic values');
+for invalid in itr(['','01','1.','1e','[1,]','{"x":}','{"x":1,}','true false','"\\q"','"\\uD800"','1e999','18446744073709551616']) {
+  fails(function(){json.parse(invalid);});
+}
+local cyclic=[];
+cyclic[0]=cyclic;
+fails(function(){json.stringify(cyclic);});
+fails(function(){json.stringify({[1]=2});});
+fails(function(){json.stringify(void);});
+fails(function(){json.stringify(require('math').inf);});
+fails(function(){json.parse(require('str').repeat('[',130)+'0'+require('str').repeat(']',130));});
+local deepJson=require('str').repeat('[',128)+require('str').repeat(']',128);
+assert(json.stringify(json.parse(deepJson))==deepJson,'JSON maximum nesting roundtrip');
+fails(function(){json.parse('['+deepJson+']');});
+local deepValue=json.parse(deepJson);
+fails(function(){json.stringify([deepValue]);});
+
+print('== time / fmt ==');
+local time=require('time');
+assert(time.millis()>0 && type(time.millis())=='long','wall clock');
+local start=time.nanos();
+assert(time.nanos()>=start,'monotonic clock');
+assert(time.date(0l)=='1970-01-01T00:00:00Z' && time.parse(time.date(1234l))==1234l,'ISO epoch roundtrip');
+time.sleep(0);
+fails(function(){time.parse('not-an-instant');});
+fails(function(){time.sleep(-1);});
+local fmt=require('fmt');
+assert(fmt.format('%s:%04d:%.2f','x',7,1.25)=='x:0007:1.25','printf formatting');
+assert(fmt.interpolate('{} + {}',1,2)=='1 + 2','ELX interpolation alias');
+assert(fmt.format('%s:%s',true,null)=='true:null','printf boolean and null');
+assert(fmt.format('%d',18446744073709551615ul)=='18446744073709551615','printf unsigned long');
+assert(fmt.format('%c',65)=='A','printf code point');
+fmt.printf('%s','');
+fails(function(){fmt.format('%d','text');});
+
+sys.unload('path');
+assert(require('path').name('a/b')=='b','wrapper reload');
+local oldList=require('list');
+sys.unload('list');
+require('gc').collect();
+assert(oldList.sum([1,2])==3.0 && require('list').min([2,1])==1,'unloaded ELX wrapper functions remain usable');
+assert(json.parse(json.stringify(object))==object,'standard values survive collection');
+print('all standard module extension tests passed');

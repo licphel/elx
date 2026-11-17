@@ -31,7 +31,6 @@ import io.viki.elx.asm.Prototype;
 import io.viki.elx.compile.Compiler;
 import io.viki.elx.lib.Library;
 import io.viki.elx.memory.*;
-import io.viki.elx.memory.*;
 import io.viki.elx.vm.VM;
 
 import java.util.Locale;
@@ -111,7 +110,7 @@ final class Bench {
     final ExtHeap external;
     final JavaRegs registers;
     final VM vm;
-    final Prototype collection = new Assembler().r(Op.CX_SAFEPOINT, 0, 0, 0).r(Op.CX_RETURN, 0, 0, 0).build(1, 0);
+    final Prototype collection = new Assembler().r(Op.SAFEPOINT, 0, 0, 0).r(Op.RETURN, 0, 0, 0).build(1, 0);
 
     Runtime(boolean nativeMemory) {
       memory = nativeMemory ? new NativeMemory(4096) : new JavaMemory(4096);

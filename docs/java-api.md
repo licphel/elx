@@ -46,7 +46,7 @@ try (Context context = Context.open();
 
 This prints `42` and `hello`. ELX integer values export as Java `Long`, including a script literal whose ELX type is `int`. `results.type(index)` reports the original ELX type when that distinction matters.
 
-`Pin.get()` has a nullable return type. A script can return `null`, and its pin then contains Java `null`. Code that needs a primitive Java value checks or otherwise establishes the result's type and presence before unboxing it.
+`Pin.get()` exposes the Java representation of the captured value. Explicit ELX `null` becomes Java `null`; ELX `void` becomes `VoidValue.INSTANCE`. Code that needs a primitive Java value checks or otherwise establishes the result's type before unboxing it.
 
 ## Runtime ownership
 
@@ -67,16 +67,18 @@ Applications using the low-level `VM(ElxHeap, ExtHeap, JavaRegs)` constructor ow
 | `compile(source)`                              | Compile source with built-ins and an empty application library.                |
 | `compile(source, library)`                     | Also resolve names from an application library.                                |
 | `compile(sourceName, source, library)`         | Retain a meaningful file or resource name for diagnostics.                     |
-| `compile(sourceName, source, library, level)`  | Select the image optimization form explicitly.                                 |
+| `compile(sourceName, source, library, level)`  | Request an optimization level; currently only O1 is implemented.                |
 | `compileFunction(source, library)`             | Compile a single function expression for direct invocation.                    |
 | `compileRaw(sourceName, source, library)`      | Inspect the compiler's direct instruction output.                              |
-| `compileInternal(sourceName, source, library)` | Compile host-generated glue with access to reserved underscore-prefixed names. |
+| `compileInternal(sourceName, source, library)` | Compile optimized host-generated glue that may use underscore-prefixed names.  |
 
 A prototype carries instructions, constants, nested function prototypes, signature information, and source locations. It can be loaded into multiple VMs. Each VM gives loaded code its own handles and addresses.
 
-O1 is the ordinary optimized form. O0 lowers operations through the internal runtime ABI for backend work. `compileRaw` is useful for tooling that needs to inspect output before those transformations.
+O1 is the supported execution form. Requesting O0 throws `UnsupportedOperationException`; the level remains reserved for future work. `compileRaw` returns direct O1 instruction selection without the optimization pass, which is useful for tooling and differential checks.
 
 The compiler resolves local and captured names first, then application-library symbols and built-ins, and finally unresolved names through the global environment. Consequently, adding an entry to `env` changes global lookups, while a name already bound to a library symbol keeps its compiled binding.
+
+The VM and host-library paths share one semantic facade, `ValueOperations`. Its arithmetic methods accept the bytecode `Op` directly, and comparisons accept `Instr.Relation`; there is no second unary/binary operation enum to translate at the host boundary. Numeric fast paths and the general fallback use the same promotion, NaN, `void`, string, container, and metamethod rules. Named and spread calls carry a `CallSite.resultCapacity` from zero through sixteen, so the compiler and VM can avoid materializing unused return slots.
 
 ## Results
 
@@ -84,12 +86,12 @@ The compiler resolves local and captured names first, then application-library s
 
 | Method        | Behavior                                                                                         |
 |---------------|--------------------------------------------------------------------------------------------------|
-| `size()`      | Return the captured number of values, from zero through four. Available after close as metadata. |
+| `size()`      | Return the captured number of values, from zero through sixteen. Available after close as metadata. |
 | `type(index)` | Read the captured ELX type at a zero-based index.                                                |
 | `get(index)`  | Acquire a new, independently owned `Pin<T>` for that value.                                      |
 | `close()`     | Release the snapshot's roots. Repeated calls are harmless.                                       |
 
-A bare `return` has size zero. `return null` has size one and type `Type.NULL`. Reading an index outside `0` through `size()-1` raises `IndexOutOfBoundsException`. Indexed access after closing results or their context raises `IllegalStateException`.
+A bare `return` has size zero. `return null` has size one and type `Type.NULL`; a returned `void` has type `Type.VOID`. Reading an index outside `0` through `size()-1` raises `IndexOutOfBoundsException`. Indexed access after closing results or their context raises `IllegalStateException`.
 
 `get(index)` creates a fresh pin on each call. A caller that keeps two pins owns and closes both. Closing `Results` leaves already acquired pins alive, so an application can retain selected values and promptly release the rest of a result set.
 
@@ -109,7 +111,7 @@ A result snapshot retains all of its returned managed values. Each pin acquired 
 | Managed or external `Pin<T>` | Its allocation remains strongly pinned until that pin closes or its context closes. |
 | `Pin.Primitive<T>`           | An independently copied Java value. Closing it has no effect on its contents.       |
 | `VM.results()`               | Borrowed slot window, overwritten by the next invocation at the same depth.         |
-| Callback `Args`              | Borrowed inputs and result writer for that callback invocation.                     |
+| Callback `Call` and `Span`   | Borrowed inputs, rooted scratch slots, and results for that callback invocation.     |
 
 `Pin.get()` exports the current representation. `isAlive()` checks the pin's liveness, `isPrimitive()` identifies independently copied values, and `close()` releases the hold. `unpin()` is an alias for `close()`.
 
@@ -127,6 +129,7 @@ The low-level heap supports `PinMode.STRONG`, `WEAK`, and `NEVER`. Strong pins r
 
 | Java input                         | ELX type                     | Java output through slot export or a result pin |
 |------------------------------------|------------------------------|-------------------------------------------------|
+| `VoidValue.INSTANCE`               | `VOID`                       | `VoidValue.INSTANCE`                            |
 | `null`                             | `NULL`                       | `null`                                          |
 | `Boolean`                          | `BOOL`                       | `Boolean`                                       |
 | `Byte`, `Short`, `Integer`, `Long` | Matching signed integer type | `Long`                                          |
@@ -137,11 +140,11 @@ The low-level heap supports `PinMode.STRONG`, `WEAK`, and `NEVER`. Strong pins r
 
 Unsigned ELX integers also export as `Long`. Values fitting the positive Java range keep that numeric value. An `ulong` above `Long.MAX_VALUE` retains its 64 payload bits, so applications needing the unsigned magnitude must interpret those bits as unsigned.
 
-Java `null` is a normal conversion input. Import writes `Type.NULL` with a zero payload and allocates no external object. Export recognizes `Type.NULL` and returns Java `null` directly. The raw `ExtHeap.add(Object)` operation registers a non-null object by identity. Nullable application values enter through `importJava`, which selects the correct type before object registration.
+Java `null` is a normal conversion input. Import writes `Type.NULL` with a zero payload and allocates no external object. Export recognizes `Type.NULL` and returns Java `null` directly. `VoidValue.INSTANCE` is the Java representation of ELX `Type.VOID`, and importing that singleton writes the void tag. The raw `ExtHeap.add(Object)` operation registers a non-null object by identity. Nullable application values enter through `importJava`, which selects the correct type before object registration.
 
-A callback can use `Args.returnObject(null)` to return an ELX null and `Args.o(index)` to read one as Java null. An external-field adapter can pass a nullable field value to `importJava` and receive null through `exportValue` when a script assigns null to that field. These conversions all follow the same typed-slot path.
+A callback can use `Call.ro(null)` to return an explicit ELX null and `Call.o(index)` to read one as Java null. Use `Call.rv()` to return ELX void; `Call.o(index)` and `Pin.get()` export it as `VoidValue.INSTANCE`. An external-field adapter can pass a nullable field value to `Span.setObject` and receive null through `Span.o` when a script assigns null to that field. Explicit `null` remains distinct from `void`, which represents an absent or unspecified value.
 
-`Results.get(index)` and `Context.pin(name)` return a pin object even for null. That pin is a `Pin.Primitive` containing null. A missing global also produces such a pin because missing global lookup returns ELX null.
+`Results.get(index)` and `Context.pin(name)` return a pin object even for explicit null. That pin is a `Pin.Primitive` containing Java null. A missing global has type `Type.VOID`, distinct from an explicitly stored `null`.
 
 `exportValue` supports primitives, strings, managed pointer payloads, and external handles. Lists, tables, and functions are accessed through their managed APIs. `Results.get` and `Context.pin` root those managed values and expose their handles, making ownership explicit while using those APIs.
 
@@ -165,63 +168,54 @@ A `Library` supplies compile-time named definitions. `SimpleLibrary` is the muta
 SimpleLibrary library = new SimpleLibrary()
     .function("add", call -> {
       call.arity(2);
-      call.returnLong(Math.addExact(call.i(0), call.i(1)));
+      call.rl(Math.addExact(call.i(0), call.i(1)));
     })
     .freeze();
 Prototype image = new Compiler().compile("return add(2, 3)", library);
 ```
 
-`HostFunction` is a functional interface with `void invoke(Args args)`. Results are appended through `Args` instead of the Java method's return value.
+`HostFunction` is a functional interface with `void invoke(Call call)`. The call view borrows the arguments and a separate result window. Typed reads (`i`, `d`, and `b`) require the corresponding value type and reject `void`. Use `operations().convert(...)` to explicitly obtain a target type's default value from `void`. Results are appended with `r`, `rs`, or `ro`; the callback's Java return value is not used. The short scalar methods are `rn`, `rbyte`, `rshort`, `ri`, `rl`, `rf`, `rd`, and `rb`. `rarg(index)` copies one input, and `rvalue(span, index)` copies from another live span. A callback may append up to sixteen results.
 
-| `Args` operation                                                                                             | Contract                                                |
-|--------------------------------------------------------------------------------------------------------------|---------------------------------------------------------|
-| `size()`, `arity(expected)`                                                                                  | Inspect argument count or require an exact count.       |
-| `typeof(index)`                                                                                              | Inspect the ELX type at a zero-based index.             |
-| `i(index)`                                                                                                   | Read an integer as a normalized Java `long`.            |
-| `d(index)`                                                                                                   | Read a numeric argument as Java `double`.               |
-| `b(index)`, `s(index)`                                                                                       | Read a boolean or export a string.                      |
-| `o(index)`                                                                                                   | Convert a supported slot value to Java, including null. |
-| `t(index)`, `l(index)`, `pointer(index)`                                                                     | Read a checked table, list, or managed-pointer handle.  |
-| `returnInt` (`ri`), `returnLong` (`rl`), `returnFloat` (`rf`), `returnDouble` (`rd`), `returnBoolean` (`rb`) | Append a typed scalar result.                           |
-| `returnString` (`rs`), `returnObject` (`ro`), `returnNull` (`rn`)                                            | Append text, a converted Java value, or null.           |
-| `returnArgument(index)`                                                                                      | Append a copy of an input value.                        |
-| `returnValue(type, bits)`                                                                                    | Append a value with an explicit ELX type and payload.   |
+`Call` extends `Span`. Use `size()` and `arity()` for input counts; `type(index)` and `bits(index)` inspect tagged values. `i`, `d`, and `b` read checked numeric or boolean values, `s` exports a string, and `o` converts a slot to a Java value, including explicit null. `set`, `setString`, and `setObject` write values into the borrowed window. `scratch(size)` supplies a zero-initialized, GC-rooted temporary span that remains valid through the callback, including nested script calls. `returnedCount()` reports how many values have been appended.
 
-Callbacks can return zero through four values. Argument accessors enforce the expected type. An exception thrown by the callback propagates through the script call and gains script trace information when available.
+`Span.operations()` exposes language arithmetic, comparison, conversion, indexing, calls, formatting, and semantic hashing. Arithmetic methods accept the bytecode `Op` directly, such as `binary(Op.ADD, ...)` and `unary(Op.NEG, ...)`. Comparisons use `Instr.Relation`. These paths share the VM's promotion and metamethod rules. The semantic `hash` operation requires an integer result. `Span.containers()` exposes raw list/table storage operations without invoking metamethods. Its `TableCursor` copies keys to a destination span, keeps the table rooted, and detects structural changes. These APIs let native libraries implement algorithms without exposing slot addresses or boxing each value. All callback views are borrowed, thread-confined, and must not be retained.
 
-`Args` and its slot addresses are borrowed for the callback's duration. Copy Java values or acquire appropriate roots when retaining data beyond the call. If callback state contains ELX handles, implement `HostFunction.trace(HeapVisitor)` and visit those references. The collector traces typed ELX references through this hook.
+An exception thrown by a callback propagates through the script call and gains script trace information when available. If callback state retains ELX handles, implement `HostFunction.trace(HeapVisitor)` and visit those references so the collector can keep them alive.
 
 A callback can synchronously call `context.execute(...)` again. Each invocation depth has its own borrowed VM result window, and the context adapter snapshots the returned slots before exposing them as `Results`. Shared callback objects still need application-managed synchronization if multiple runtimes use them from different threads.
 
 ## External object adapters
 
-Implement `HostAccess` on a Java object and pass that object through `importJava`. The default `ExtHeap` dispatches every ELX metamethod through `elx_handle(Metamethod, Args)`. For member access and calls, the borrowed `Args` exposes the member name through `name()`. Ordinary inputs use `i`, `d`, `b`, `s`, `o`, `t`, `l`, and `pointer`, while typed results use `ri`, `rl`, `rf`, `rd`, `rb`, `rs`, `ro`, and `rn`.
+Implement `HostAccess` on a Java object and pass it through `Span.setObject` or the external heap's `importJava`. The default `ExtHeap` sends every operation through `elx_handle(Metamethod, Call)`. The arguments use a canonical indexed layout instead of a separate member-name channel: GET receives `self, key`; SET receives `self, key, value`; CALL receives `self` followed by explicit arguments. Unary operations receive their operand, binary operations receive left and right in source order, and STR, BOOL, and GC receive `self`.
 
-`Metamethod` covers arithmetic, comparisons, `getattr`, `setattr`, `call`, `init`, `str`, `++`, and `--`. The default handler is empty, so an adapter branches on the requested method and implements only the operations it exposes. A getter should append one result with a return helper. A setter reads its first input with `o(0)`. A member call reads its arguments normally and appends zero through four results.
+`Metamethod` covers arithmetic, comparisons, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. ELX table metatables use the lowercase names `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`, `ushr`, `pos`, `neg`, `invert`, `not`, `bool`, `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `get`, `set`, `call`, `init`, `str`, `inc`, `dec`, `gc`, and `hash`. The default handler is empty, so an adapter implements only the behavior it owns. A result-producing handler appends a value through `Call`. An empty scalar-result hook means that the operation is unavailable; appending an explicit `null` counts as a handled result. SET, INIT, and GC hooks may complete without results. `hash` must append exactly one integer value.
 
-For example, this adapter exposes a nullable field and one callable member:
+This adapter exposes one readable and writable property:
 
 ```
 final class Settings implements HostAccess {
-  @Nullable Object value;
+  private long value;
 
-  @Override public void elx_handle(Metamethod method, Args args) {
-    if (method == Metamethod.GET && args.name().equals("value")) args.ro(value);
-    if (method == Metamethod.SET && args.name().equals("value")) value = args.o(0);
-    if (method == Metamethod.CALL && args.name().equals("reset")) value = null;
+  @Override public void elx_handle(Metamethod method, Call args) {
+    if (method == Metamethod.GET && args.type(1) == Type.STRING && args.s(1).equals("value")) args.rl(value);
+    if (method == Metamethod.SET && args.type(1) == Type.STRING && args.s(1).equals("value")) value = args.i(2);
   }
 }
 ```
 
-`HostAccess` objects are used with `Context.open()` and do not depend on the external heap class. Implement `elx_trace(HeapVisitor)` when the object retains ELX handles. The runtime invokes `elx_handle(Metamethod.GC, args)` when its external handle is reclaimed, which is the place to release an owned resource. `ExtHeap` subclassing remains the lower-level escape hatch for custom handle storage or raw bridge behavior.
+`HostAccess` objects work with `Context.open()` and do not depend on the external heap class. Implement `elx_trace(HeapVisitor)` when the object retains ELX handles. Handle `Metamethod.GC` in `elx_handle` when the external value is reclaimed and the adapter must release an owned resource. `ExtHeap` subclassing remains the lower-level escape hatch for custom handle storage or raw bridge behavior.
 
-External objects use Java reference identity. Importing the same live object reuses its handle. Field locations retain the owning object and member name, and read the current field value when dereferenced. A nullable field value is therefore distinct from a missing or expired object handle.
+External objects use Java reference identity. Importing the same live object reuses its handle. A nullable Java field value maps to explicit ELX `null`; it remains distinct from an absent value represented by `void`.
 
 ## Module loading
 
-`context.vm().modules()` exposes the per-VM `Modules` loader. `directory(path)` selects the filesystem base for script modules. `resolver(resolver)` appends a host resolver to the ordered resolver list.
+`context.vm().modules()` exposes the per-VM `Modules` loader. `directory(path)` selects the filesystem base for script modules. `addHandler(resolver)` appends a host resolver to the ordered resolver list.
 
 A `ModuleResolver` returns `ModuleResolver.Source` for a handled name and null to let the loader try its next source. The source contains a diagnostic name, script text, and a library. The two-argument source constructor uses an empty application library. This resolver-level null means “continue searching” and is separate from an ELX module that successfully exports null.
+
+A source library also supplies native declarations. Register a callback with `library.function("host.log", callback)` and compile a script containing `native function host.log(message: string);`. The compiler checks that the named definition exists and is callable. Constants registered through `constant` or `text` use value declarations such as `native threshold: int;`. A qualified native name is bound directly and does not require a runtime `host` table. Compiled functions and constants continue through the existing per-VM linker, so symbols contain no addresses from another VM.
+
+Bundled standard modules use this same compile-time binding path. Their public ELX tables combine native bindings with script implementations. There is no separate `_n_*` module API. The standard-module loader owns its supplied native library and drops that library's loader root on unload; libraries supplied by application resolvers remain under the application's ownership.
 
 Built-in modules are resolved first. Other requests try registered resolvers, then files under the configured directory, then bundled `/elx/` resources. A successful result is cached by the requested name. Script modules execute in the requesting VM and share its globals.
 
@@ -237,7 +231,7 @@ Built-in modules are resolved first. Other requests try registered resolvers, th
 
 Compilation failures use `SyntaxException` with source location information. Runtime failures propagate their Java exception and can include a suppressed `ScriptTrace` with script frames. Give the compiler a meaningful source name to make these frames useful in logs.
 
-Script `pcall` catches `RuntimeException`. Java `Error` subclasses, including the `AssertionError` produced by script `assert`, continue to the host. The host chooses the application-level reporting and recovery policy around an execution.
+`assert(condition[, message])` returns a true boolean unchanged and raises `AssertionError` for false. A `void` argument needs an explicit `bool(void)` conversion. `throw(value)` formats its value and raises `RuntimeException`. Script `pcall(targetfn, handlerfn)` catches those runtime exceptions and assertion failures. It passes an error table to `handlerfn`, then returns `false` followed by the handler's values. A successful target returns `true` followed by its values. Errors raised by the handler propagate to the host, as do other Java `Error` subclasses.
 
 `vm.unload(image)` and `vm.unload(library)` release linker roots when an application has finished using loaded code. Live function values can retain their code independently until those values become unreachable.
 
@@ -248,7 +242,7 @@ Script `pcall` catches `RuntimeException`. Java `Error` subclasses, including th
 | `io.viki.elx.Context`, `Results`                                   | Runtime ownership and retained execution results.                          |
 | `io.viki.elx.compile.Compiler`                                     | Source compilation and source-level diagnostics.                           |
 | `io.viki.elx.asm.Prototype`, `Parameters`                          | Compiled code and function signature metadata.                             |
-| `io.viki.elx.lib.Library`, `SimpleLibrary`, `HostFunction`, `Args` | Host definitions and callback invocation.                                  |
+| `io.viki.elx.lib.Library`, `SimpleLibrary`, `HostFunction`, `Call`, `Span` | Host definitions, borrowed input values, and callback results.             |
 | `io.viki.elx.vm.VM`, `Modules`                                     | Execution, linking, globals, modules, budgets, and collection controls.    |
 | `io.viki.elx.memory.Pin`, `PinMode`                                | Host retention and liveness.                                               |
 | `io.viki.elx.memory.HostAccess`, `ExtHeap`                         | Java object metamethods, identity conversion, and low-level bridge access. |

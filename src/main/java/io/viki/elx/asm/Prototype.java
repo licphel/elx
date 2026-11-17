@@ -39,7 +39,6 @@ import java.util.Arrays;
  */
 public final class Prototype {
   private final int registers, parameters, captures;
-  private final boolean baseOnly;
   private final @Nullable Parameters signature;
   private final CallSite[] callSites;
   private final int[] lines;
@@ -55,7 +54,6 @@ public final class Prototype {
     if (registers < 1 || registers > Instr.MAX_REGISTERS || parameters < 0 || parameters > registers) {
       throw new IllegalArgumentException("Invalid register/parameter window: " + registers + "/" + parameters);
     }
-    baseOnly = source.baseOnly;
     signature = source.parameters;
     if (signature != null && signature.names().size() != parameters) {
       throw new IllegalArgumentException("Signature parameter count does not match register window");
@@ -84,62 +82,55 @@ public final class Prototype {
   }
 
   /**
-     * Returns whether this image contains only the primitive instruction set.
-     * O0 images are accepted by the decomposing interpreter and do not contain
-     * integrated {@code CX_*} operations.
-     *
-     * @return {@code true} when the image is base-only
-   */
-  public boolean baseOnly() {
-    return baseOnly;
-  }
-
-  /**
-     * Returns the source-level signature retained for this function, when one
-     * was emitted by the compiler.
-     *
-     * @return the parameter signature, or {@code null} for an anonymous/raw
-     *     function image
+   * Returns the source-level signature retained for this function, when one
+   * was emitted by the compiler.
+   *
+   * @return the parameter signature, or {@code null} for an anonymous/raw
+   * function image
    */
   public @Nullable Parameters signature() {
     return signature;
   }
 
   /**
-     * Returns metadata for the call site at {@code index}.
-     *
-     * @param index zero-based call-site index
-     * @return the immutable call-site descriptor
-     * @throws IndexOutOfBoundsException if {@code index} is outside the call-site table
+   * Returns metadata for the call site at {@code index}.
+   *
+   * @param index zero-based call-site index
+   * @return the immutable call-site descriptor
+   * @throws IndexOutOfBoundsException if {@code index} is outside the call-site table
    */
   public CallSite callSite(int index) {
     return callSites[index];
   }
 
+  int callSiteCount() {
+    return callSites.length;
+  }
+
   /**
-     * Maps a program-counter word offset to its source line. Out-of-range
-     * offsets are clamped so diagnostics can still describe a failed boundary.
-     *
-     * @param pc word offset in this image
-     * @return one-based source line, or the stored line for the nearest boundary
+   * Maps a program-counter word offset to its source line. Out-of-range
+   * offsets are clamped so diagnostics can still describe a failed boundary.
+   *
+   * @param pc word offset in this image
+   * @return one-based source line, or the stored line for the nearest boundary
    */
   public int line(int pc) {
     return lines[Math.max(0, Math.min(pc, lines.length - 1))];
   }
 
   /**
-     * Returns the source name associated with this image.
-     *
-     * @return source name used in diagnostics
+   * Returns the source name associated with this image.
+   *
+   * @return source name used in diagnostics
    */
   public String sourceName() {
     return sourceName;
   }
 
   /**
-     * Returns the compiler-visible name of this function.
-     *
-     * @return function name, including an implementation-generated name when applicable
+   * Returns the compiler-visible name of this function.
+   *
+   * @return function name, including an implementation-generated name when applicable
    */
   public String functionName() {
     return functionName;
@@ -164,148 +155,148 @@ public final class Prototype {
   }
 
   /**
-     * Returns the number of virtual registers in the function window.
-     *
-     * @return register-window size
+   * Returns the number of virtual registers in the function window.
+   *
+   * @return register-window size
    */
   public int registerCount() {
     return registers;
   }
 
   /**
-     * Returns the number of parameter registers populated on entry.
-     *
-     * @return parameter count
+   * Returns the number of parameter registers populated on entry.
+   *
+   * @return parameter count
    */
   public int parameterCount() {
     return parameters;
   }
 
   /**
-     * Returns the number of closure captures expected by this function.
-     *
-     * @return capture count
+   * Returns the number of closure captures expected by this function.
+   *
+   * @return capture count
    */
   public int captureCount() {
     return captures;
   }
 
   /**
-     * Returns the encoded instruction-image length in 32-bit words.
-     *
-     * @return code length
+   * Returns the encoded instruction-image length in 32-bit words.
+   *
+   * @return code length
    */
   public int wordCount() {
     return code.length;
   }
 
   /**
-     * Reads one encoded instruction word without decoding it.
-     *
-     * @param pc word offset
-     * @return raw instruction or operand word
-     * @throws IndexOutOfBoundsException if {@code pc} is outside the image
+   * Reads one encoded instruction word without decoding it.
+   *
+   * @param pc word offset
+   * @return raw instruction or operand word
+   * @throws IndexOutOfBoundsException if {@code pc} is outside the image
    */
   public int word(int pc) {
     return code[pc];
   }
 
   /**
-     * Tests whether a word offset is the start of an encoded instruction.
-     *
-     * @param pc word offset
-     * @return {@code true} when {@code pc} is an instruction boundary
+   * Tests whether a word offset is the start of an encoded instruction.
+   *
+   * @param pc word offset
+   * @return {@code true} when {@code pc} is an instruction boundary
    */
   public boolean instructionStart(int pc) {
     return pc >= 0 && pc < boundaries.length && boundaries[pc];
   }
 
   /**
-     * Returns the number of entries in the constant pool.
-     *
-     * @return constant count
+   * Returns the number of entries in the constant pool.
+   *
+   * @return constant count
    */
   public int constantCount() {
     return constants.length;
   }
 
   /**
-     * Returns the declared runtime type of a constant-pool entry.
-     *
-     * @param index constant-pool index
-     * @return encoded constant type
-     * @throws IndexOutOfBoundsException if {@code index} is outside the pool
+   * Returns the declared runtime type of a constant-pool entry.
+   *
+   * @param index constant-pool index
+   * @return encoded constant type
+   * @throws IndexOutOfBoundsException if {@code index} is outside the pool
    */
   public Type constantType(int index) {
     return Type.fromTag(types[index]);
   }
 
   /**
-     * Returns the symbolic reference attached to a constant, if it requires
-     * link-time resolution.
-     *
-     * @param index constant-pool index
-     * @return unresolved symbol, or {@code null} for a literal/non-symbolic entry
+   * Returns the symbolic reference attached to a constant, if it requires
+   * link-time resolution.
+   *
+   * @param index constant-pool index
+   * @return unresolved symbol, or {@code null} for a literal/non-symbolic entry
    */
   public @Nullable Symbol constantSymbol(int index) {
     return symbols[index];
   }
 
   /**
-     * Tests whether a constant has already been resolved for a VM image.
-     *
-     * @param index constant-pool index
-     * @return {@code true} when link-time resolution has completed
+   * Tests whether a constant has already been resolved for a VM image.
+   *
+   * @param index constant-pool index
+   * @return {@code true} when link-time resolution has completed
    */
   public boolean constantLinked(int index) {
     return linked[index];
   }
 
   /**
-     * Returns compiler/linker flags stored alongside a constant.
-     *
-     * @param index constant-pool index
-     * @return raw constant flags
+   * Returns compiler/linker flags stored alongside a constant.
+   *
+   * @param index constant-pool index
+   * @return raw constant flags
    */
   public byte constantFlags(int index) {
     return flags[index];
   }
 
   /**
-     * Returns the raw 64-bit payload of a numeric or encoded constant.
-     *
-     * @param index constant-pool index
-     * @return raw constant bits
+   * Returns the raw 64-bit payload of a numeric or encoded constant.
+   *
+   * @param index constant-pool index
+   * @return raw constant bits
    */
   public long constantBits(int index) {
     return constants[index];
   }
 
   /**
-     * Returns the byte offset of a UTF-8 string constant in the shared blob.
-     *
-     * @param index constant-pool index
-     * @return UTF-8 byte offset
+   * Returns the byte offset of a UTF-8 string constant in the shared blob.
+   *
+   * @param index constant-pool index
+   * @return UTF-8 byte offset
    */
   public int stringOffset(int index) {
     return (int) (constants[index] >>> 32);
   }
 
   /**
-     * Returns the UTF-8 byte length of a string constant.
-     *
-     * @param index constant-pool index
-     * @return byte length
+   * Returns the UTF-8 byte length of a string constant.
+   *
+   * @param index constant-pool index
+   * @return byte length
    */
   public int stringLength(int index) {
     return (int) constants[index];
   }
 
   /**
-     * Reads a byte from the image-wide UTF-8 string blob.
-     *
-     * @param offset byte offset in the blob
-     * @return raw UTF-8 byte
+   * Reads a byte from the image-wide UTF-8 string blob.
+   *
+   * @param offset byte offset in the blob
+   * @return raw UTF-8 byte
    */
   public byte stringByte(int offset) {
     return strings[offset];
@@ -324,20 +315,20 @@ public final class Prototype {
   }
 
   /**
-     * Returns the number of nested function prototypes embedded in this image.
-     *
-     * @return nested-function count
+   * Returns the number of nested function prototypes embedded in this image.
+   *
+   * @return nested-function count
    */
   public int functionCount() {
     return functions.length;
   }
 
   /**
-     * Returns a nested function prototype by index.
-     *
-     * @param index nested-function index
-     * @return child prototype
-     * @throws IndexOutOfBoundsException if {@code index} is outside the child table
+   * Returns a nested function prototype by index.
+   *
+   * @param index nested-function index
+   * @return child prototype
+   * @throws IndexOutOfBoundsException if {@code index} is outside the child table
    */
   public Prototype function(int index) {
     return functions[index];
@@ -349,9 +340,6 @@ public final class Prototype {
     }
     for (int pc = 0; pc < code.length; ) {
       Op op = Instr.op(code[pc]);
-      if (baseOnly && !op.base()) {
-        throw invalid(pc, "runtime opcode in O0 image: " + op);
-      }
       int length = op.format().words();
       if (pc + length > code.length) {
         throw invalid(pc, "truncated " + op);
@@ -384,8 +372,26 @@ public final class Prototype {
   }
 
   void constantIndex(int index, int pc) {
-    if (index >= constants.length) {
+    if (index < 0 || index >= constants.length) {
       throw invalid(pc, "constant index outside pool");
+    }
+  }
+
+  void callSiteIndex(int index, int pc) {
+    if (index < 0 || index >= callSites.length) {
+      throw invalid(pc, "call-site index outside pool");
+    }
+  }
+
+  void functionIndex(int index, int pc) {
+    if (index < 0 || index >= functions.length) {
+      throw invalid(pc, "function index outside pool");
+    }
+  }
+
+  void captureIndex(int index, int pc) {
+    if (index < 0 || index >= captures) {
+      throw invalid(pc, "capture index outside closure window");
     }
   }
 

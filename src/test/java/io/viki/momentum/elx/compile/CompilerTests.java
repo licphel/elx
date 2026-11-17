@@ -12,7 +12,7 @@ import io.viki.elx.vm.VM;
 
 /** Source -> bytecode -> both VM backends, including malformed source and runtime types. */
 public final class CompilerTests {
-  private static final io.viki.elx.compile.Compiler COMPILER=new Compiler();
+  private static final Compiler COMPILER=new Compiler();
   private static int checks,scripts;
   private CompilerTests() { }
   private static final class NoHost extends ExtHeap {
@@ -99,7 +99,7 @@ public final class CompilerTests {
       StringBuilder pointerOutput = new StringBuilder();
       vm.output(pointerOutput::append);
       vm.execute(COMPILER.compile("print 'bare', 7; print('call', 8)"));
-      check(pointerOutput.toString().equals("bare\t7\ncall\t8\n"));
+      check(pointerOutput.toString().equals("bare, 7\ncall, 8\n"));
       pointerOutput.setLength(0);
       vm.execute(COMPILER.compile("""
           local v = int(5)
@@ -130,7 +130,7 @@ public final class CompilerTests {
           new Type[]{Type.INT,Type.LONG,Type.SHORT,Type.FLOAT},new long[]{Integer.MIN_VALUE,Long.MIN_VALUE,Short.MIN_VALUE,0x80000000L});
       expect(vm,"local x=1; x<<=3; x|=2; x^=1; x&=15; x>>=1; x>>>=1; x~=; return x",Type.INT,-3);
       expect(vm,"local i=50; for i=0, i<3, i+=1 { } return i",Type.INT,50);
-      expect(vm,"local x; return x",Type.NULL,0);
+      expect(vm,"local x; return x",Type.VOID,0);
       expect(vm,"return +1, -(-1), ~0, ubyte(256)",new Type[]{Type.INT,Type.INT,Type.INT,Type.UBYTE},new long[]{1,1,-1,0});
       expect(vm,"local x=8; return +x, -x, ~x, !bool(x)",new Type[]{Type.INT,Type.INT,Type.INT,Type.BOOL},new long[]{8,-8,-9,0});
       expect(vm,"return 'a'<'b', 'b'>='b', 'a'!='A', null==null",new Type[]{Type.BOOL,Type.BOOL,Type.BOOL,Type.BOOL},new long[]{1,1,1,1});
@@ -153,7 +153,7 @@ public final class CompilerTests {
       failure(IllegalArgumentException.class,()->vm.execute(COMPILER.compile("local x=1.0; return x&2")));
       failure(IllegalArgumentException.class,()->vm.execute(COMPILER.compile("local x='s'; return int(x)")));
       failure(SyntaxException.class,()->COMPILER.compile("local x=1; return long(&x)"));
-      failure(SyntaxException.class,()->COMPILER.compile("return ptr(1l)"));
+      failure(IllegalArgumentException.class,()->vm.execute(COMPILER.compile("return ptr(1l)")));
       failure(ArithmeticException.class,()->vm.execute(COMPILER.compile("local x=0; return 1/x")));
       check(regs.depth()==0);vm.budget(512);
       failure(IllegalStateException.class,()->vm.execute(COMPILER.compile("while true { continue }")));
@@ -162,7 +162,7 @@ public final class CompilerTests {
     }
   }
   private static void lexical(){
-    Tokenizer scan=new Tokenizer("local iffy = 1 /* hi */ // line\r\nreturn iffy >>>= 2");
+    Tokenizer scan=new Tokenizer("local iffy = 1 /* hi */ // line\r\nreturn iffy >>>= 2",true);
     Token[] expected={Token.LOCAL,Token.IDENTIFIER,Token.EQUAL,Token.INT_LITERAL,Token.SEP,Token.RETURN,Token.IDENTIFIER,Token.SHIFT_UNSIGNED_RIGHT_EQUAL,Token.INT_LITERAL,Token.EOF};
     for(Token token:expected)check(scan.next().kind()==token);
     Tokenizer identifiers=new Tokenizer("if#x _end λ");for(int i=0;i<3;i++)check(identifiers.next().kind()==Token.IDENTIFIER);
@@ -178,7 +178,7 @@ public final class CompilerTests {
       "return false||1", "return 2147483648",
       "return 256b", "return -32769s", "return 18446744073709551616ul", "return 1e999", "return 1e",
       "return 1.0u", "return b'102", "return 1'", "return 'open", "/* open", "return '\\q'", "return '\\u123'",
-      "return 1,2,3,4,5", "return 1 ? 2",
+      "return 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17", "return 1 ? 2",
       "local x=1; x+=", "} else { }", "for i=0, true, i+=1 {", "return (1+2", "return true && null"
     };
     for(String source:invalid)failure(SyntaxException.class,()->COMPILER.compile(source));

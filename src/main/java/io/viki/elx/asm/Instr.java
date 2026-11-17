@@ -58,9 +58,9 @@ public final class Instr {
    * Encodes an opcode and three eight-bit register fields.
    *
    * @param op opcode to encode
-   * @param a A register field
-   * @param b B register field
-   * @param c C register field
+   * @param a  A register field
+   * @param b  B register field
+   * @param c  C register field
    * @return encoded instruction word
    * @throws IllegalArgumentException if a register field is outside the eight-bit range
    */
@@ -74,8 +74,8 @@ public final class Instr {
   /**
    * Encodes an opcode, destination register, and sixteen-bit constant index.
    *
-   * @param op opcode to encode
-   * @param a destination register
+   * @param op    opcode to encode
+   * @param a     destination register
    * @param index constant-pool index
    * @return encoded instruction word
    * @throws IllegalArgumentException if the register or index is outside its field width
@@ -91,8 +91,8 @@ public final class Instr {
   /**
    * Encodes a conditional branch with a signed byte displacement relative to this instruction.
    *
-   * @param op branch opcode
-   * @param condition condition register
+   * @param op           branch opcode
+   * @param condition    condition register
    * @param displacement byte displacement from the instruction's first word
    * @return encoded branch word
    * @throws IllegalArgumentException if the register or displacement is invalid
@@ -112,7 +112,7 @@ public final class Instr {
    */
   public static int jump(int displacement) {
     displacement(displacement, 24);
-    return Op.JUMP.ordinal() | (displacement & 0xFFFFFF) << 8;
+    return Op.JMP.ordinal() | (displacement & 0xFFFFFF) << 8;
   }
 
   /**
@@ -186,35 +186,19 @@ public final class Instr {
   }
 
   /**
-   * Encodes a numeric type and comparison relation in a control word.
+   * Encodes a language comparison relation and optional branch inversion.
    *
-   * @param type numeric type
-   * @param relation comparison relation
-   * @return packed control word
+   * @param relation    comparison relation
+   * @param branchFalse whether the comparison's result should be inverted for a branch
+   * @return packed relation control word
    */
-  public static int control(Type type, Relation relation) {
-    return Byte.toUnsignedInt(type.tag()) | relation.ordinal() << 8;
+  public static int control(Relation relation, boolean branchFalse) {
+    return relation.ordinal() | (branchFalse ? BRANCH_FALSE : 0);
   }
 
-  /**
-   * Encodes a numeric type with the equality relation.
-   *
-   * @param type numeric type
-   * @return packed control word
-   */
-  public static int control(Type type) {
-    return control(type, Relation.EQ);
-  }
-
-  /**
-   * Encodes a dynamic operator and ordering relation.
-   *
-   * @param op dynamic operator
-   * @param relation ordering relation
-   * @return packed operator control word
-   */
-  public static int operator(Op op, Relation relation) {
-    return op.ordinal() | relation.ordinal() << 8;
+  /** Encodes a language comparison relation without branch inversion. */
+  public static int control(Relation relation) {
+    return control(relation, false);
   }
 
   /**
@@ -234,21 +218,21 @@ public final class Instr {
    * @return encoded comparison relation
    */
   public static Relation relation(int control) {
-    return RELATIONS[control >>> 8 & 255];
+    return RELATIONS[control & 255];
   }
 
   /**
    * Packs a call's argument count and result capacity.
    *
    * @param arguments number of input arguments
-   * @param results maximum number of returned values, from zero through four
+   * @param results   maximum number of returned values, from zero through sixteen
    * @return packed call control word
    * @throws IllegalArgumentException if either count exceeds its field range
    */
   public static int callWindow(int arguments, int results) {
     u8(arguments);
-    if (results < 0 || results > 4) {
-      throw new IllegalArgumentException("Result capacity outside 0..4: " + results);
+    if (results < 0 || results > io.viki.elx.lib.Call.MAX_RESULTS) {
+      throw new IllegalArgumentException("Result capacity outside 0..16: " + results);
     }
     return arguments | results << 8;
   }
@@ -256,9 +240,9 @@ public final class Instr {
   /**
    * Packs an external call's argument-base register with its call window.
    *
-   * @param base first argument register
+   * @param base      first argument register
    * @param arguments number of input arguments
-   * @param results maximum number of returned values
+   * @param results   maximum number of returned values
    * @return packed external-call control word
    * @throws IllegalArgumentException if any field is outside its valid range
    */
@@ -295,6 +279,11 @@ public final class Instr {
    */
   public static int argumentBase(int control) {
     return control >>> 16 & 255;
+  }
+
+  /** Internal operator dispatch control; distinct from comparison bytecode control. */
+  public static int operator(Op op, Relation relation) {
+    return op.ordinal() | (relation.ordinal() << 8);
   }
 
   static void u8(int value) {

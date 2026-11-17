@@ -29,7 +29,6 @@ import io.viki.elx.lib.LE_Bits;
 import io.viki.elx.lib.LE_String;
 import io.viki.elx.lib.LibraryEntry;
 import io.viki.elx.lib.Symbol;
-import io.viki.elx.lib.*;
 import org.jspecify.annotations.Nullable;
 
 import java.io.ByteArrayOutputStream;
@@ -54,7 +53,6 @@ public final class Assembler {
   final List<CallSite> callSites = new ArrayList<>();
   int[] code = new int[32];
   @Nullable Parameters parameters;
-  boolean baseOnly;
   int words;
   int[] lines = new int[32];
   String sourceName = "<script>", functionName = "<script>";
@@ -128,7 +126,7 @@ public final class Assembler {
   /**
    * Sets source and function names used by diagnostics and stack traces.
    *
-   * @param source source file or resource name
+   * @param source   source file or resource name
    * @param function function name within the source
    */
   public void source(String source, String function) {
@@ -246,14 +244,14 @@ public final class Assembler {
   /**
    * Adds a numeric or null constant with assembler-defined flags.
    *
-   * @param type constant type; must be numeric or {@link Type#NULL}
+   * @param type  constant type; must be numeric or {@link Type#NULL}
    * @param flags constant metadata flags
-   * @param bits raw payload bits
+   * @param bits  raw payload bits
    * @return constant-pool index
    * @throws IllegalArgumentException if {@code type} is not a supported scalar constant type
    */
   public int constant(Type type, byte flags, long bits) {
-    if (!type.numeric() && type != Type.NULL) {
+    if (!type.numeric() && type != Type.NULL && type != Type.VOID) {
       throw new IllegalArgumentException("Use string/function constants or parameters for " + type);
     }
     return addConstant(type, flags, bits);
@@ -262,7 +260,7 @@ public final class Assembler {
   /**
    * Adds a process-local reference resolved by a compile-time library.
    *
-   * @param type reference type or scalar type for a plain constant
+   * @param type    reference type or scalar type for a plain constant
    * @param address process-local address or scalar payload
    * @return constant-pool index
    * @throws IllegalArgumentException if the scalar type is unsupported
@@ -315,12 +313,27 @@ public final class Assembler {
    * @return function constant-pool index
    */
   public int function(Prototype prototype) {
+    return addConstant(Type.FUNCTION, (byte) 0, functionIndex(prototype));
+  }
+
+  /**
+   * Adds or reuses a child prototype and returns its transient child-pool index.
+   *
+   * @param prototype child function image
+   * @return zero-based child-function index
+   */
+  public int functionIndex(Prototype prototype) {
+    for (int i = 0; i < functionCount; i++) {
+      if (functions[i] == prototype) {
+        return i;
+      }
+    }
     if (functionCount == functions.length) {
       functions = Arrays.copyOf(functions, functionCount * 2);
     }
     int index = functionCount++;
     functions[index] = prototype;
-    return addConstant(Type.FUNCTION, (byte) 0, index);
+    return index;
   }
 
   private int addConstant(Type type, byte flag, long bits) {
@@ -355,9 +368,9 @@ public final class Assembler {
    * Emits an instruction whose operands are encoded in the register format.
    *
    * @param op register-format opcode
-   * @param a first register operand
-   * @param b second register operand
-   * @param c third register operand
+   * @param a  first register operand
+   * @param b  second register operand
+   * @param c  third register operand
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} does not use register format
    */
@@ -370,10 +383,10 @@ public final class Assembler {
   /**
    * Emits an extended register instruction with a trailing control word.
    *
-   * @param op extended-register opcode
-   * @param a first register operand
-   * @param b second register operand
-   * @param c third register operand
+   * @param op      extended-register opcode
+   * @param a       first register operand
+   * @param b       second register operand
+   * @param c       third register operand
    * @param control operation-specific control word
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} does not use extended-register format
@@ -388,9 +401,9 @@ public final class Assembler {
   /**
    * Emits an immediate instruction without an explicit control word.
    *
-   * @param op immediate or signed-immediate opcode
-   * @param a first register operand
-   * @param b second register operand
+   * @param op        immediate or signed-immediate opcode
+   * @param a         first register operand
+   * @param b         second register operand
    * @param immediate immediate payload
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} does not use immediate format
@@ -402,17 +415,17 @@ public final class Assembler {
   /**
    * Emits an immediate instruction with an operation-specific control word.
    *
-   * @param op immediate or signed-immediate opcode
-   * @param a first register operand
-   * @param b second register operand
-   * @param control operation-specific control word
+   * @param op        immediate or signed-immediate opcode
+   * @param a         first register operand
+   * @param b         second register operand
+   * @param control   operation-specific control word
    * @param immediate immediate payload
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} does not use immediate format
    */
   public Assembler immediate(Op op, int a, int b, int control, int immediate) {
-    if (op.format() != Format.I && op.format() != Format.S) {
-      throw new IllegalArgumentException("Not I/S format: " + op);
+    if (op.format() != Format.I) {
+      throw new IllegalArgumentException("Not I format: " + op);
     }
     word(Instr.header(op, a, b, control));
     word(immediate);
@@ -423,20 +436,20 @@ public final class Assembler {
    * Emits a constant-load instruction.
    *
    * @param destination destination register
-   * @param index constant-pool index
+   * @param index       constant-pool index
    * @return this assembler for fluent emission
    */
   public Assembler constant(int destination, int index) {
-    word(Instr.upper(Op.LC, destination, index));
+    word(Instr.upper(Op.LOADK, destination, index));
     return this;
   }
 
   /**
    * Emits an upper-format instruction with a constant or table index.
    *
-   * @param op upper-format opcode
+   * @param op          upper-format opcode
    * @param destination destination register
-   * @param index encoded index
+   * @param index       encoded index
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} does not use upper format
    */
@@ -449,9 +462,9 @@ public final class Assembler {
   /**
    * Emits a conditional branch whose displacement is fixed when the label is bound.
    *
-   * @param op branch-format opcode
+   * @param op        branch-format opcode
    * @param condition condition register
-   * @param label branch target label
+   * @param label     branch target label
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if {@code op} is not branch format or the label is unknown
    */
@@ -476,25 +489,26 @@ public final class Assembler {
   }
 
   /**
-   * Emits a typed comparison branch using two registers.
+   * Emits a hooked comparison branch using a scratch register and two operands.
    *
-   * @param left left operand register
-   * @param right right operand register
-   * @param control comparison relation and type control
-   * @param label branch target label
+   * @param scratch register used for a hooked comparison result
+   * @param left    left operand register
+   * @param right   right operand register
+   * @param control comparison relation and branch polarity
+   * @param label   branch target label
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if the label is unknown
    */
-  public Assembler compareBranch(int left, int right, int control, int label) {
-    return compareBranch(Instr.header(Op.CX_BR_ICMP, left, right, 0), control, label);
+  public Assembler compareBranch(int scratch, int left, int right, int control, int label) {
+    return compareBranch(Instr.header(Op.BR_COMPARE, scratch, left, right), control, label);
   }
 
   /**
    * Emits a comparison branch from a prebuilt branch header.
    *
-   * @param header branch-format instruction header
+   * @param header  branch-format instruction header
    * @param control comparison relation and type control
-   * @param label branch target label
+   * @param label   branch target label
    * @return this assembler for fluent emission
    * @throws IllegalArgumentException if the header is not a comparison branch or the label is unknown
    */
@@ -538,10 +552,10 @@ public final class Assembler {
   /**
    * Finalizes labels, metadata, and constant tables into an executable prototype.
    *
-   * @param registers number of VM registers allocated to the function
+   * @param registers  number of VM registers allocated to the function
    * @param parameters number of positional parameters
    * @return immutable executable prototype
-   * @throws IllegalStateException if a branch label remains unbound
+   * @throws IllegalStateException    if a branch label remains unbound
    * @throws IllegalArgumentException if register or parameter limits are invalid
    */
   public Prototype build(int registers, int parameters) {

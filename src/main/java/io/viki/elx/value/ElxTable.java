@@ -43,6 +43,15 @@ public final class ElxTable {
   private ElxTable() {
   }
 
+  /** Monotonic structural version, unchanged when replacing an existing value. */
+  public static long version(Memory memory, long table) {
+    return Slot.bits(memory, Slot.address(table, 5));
+  }
+
+  private static void modified(Memory memory, long table) {
+    Slot.write(memory, Slot.address(table, 5), Type.LONG, version(memory, table) + 1);
+  }
+
   /**
    * Allocates an empty open-addressed table descriptor.
    *
@@ -58,7 +67,7 @@ public final class ElxTable {
    * Returns the table's metatable pointer, or zero when absent.
    *
    * @param memory memory containing the table
-   * @param table table pointer
+   * @param table  table pointer
    * @return metatable pointer, or zero
    */
   public static long metatable(Memory memory, long table) {
@@ -68,11 +77,11 @@ public final class ElxTable {
   /**
    * Installs or clears a metatable and materializes its hook cache.
    *
-   * @param heap owning ELX heap
+   * @param heap  owning ELX heap
    * @param table table receiving the metatable
-   * @param meta metatable pointer, or zero to clear it
+   * @param meta  metatable pointer, or zero to clear it
    * @throws IllegalArgumentException if a metatable hook has an invalid type
-   * @throws IllegalStateException if the heap or table is dead
+   * @throws IllegalStateException    if the heap or table is dead
    */
   public static void setMetatable(ElxHeap heap, long table, long meta) {
     Memory memory = heap.memory();
@@ -86,7 +95,7 @@ public final class ElxTable {
    * Returns a cached metamethod slot address, or zero when unavailable.
    *
    * @param memory memory containing the table
-   * @param table table whose metatable is queried
+   * @param table  table whose metatable is queried
    * @param method metamethod ordinal
    * @return hook slot address, or zero when no hook is installed
    */
@@ -99,7 +108,8 @@ public final class ElxTable {
       return 0;
     }
     long hooks = Slot.bits(memory, Slot.address(meta, HOOKS)), cell = Slot.address(hooks, method);
-    return Slot.type(memory, cell) == Type.NULL ? 0 : cell;
+    Type type = Slot.type(memory, cell);
+    return type == Type.NULL || type == Type.VOID ? 0 : cell;
   }
 
   private static void ensureHooks(ElxHeap heap, long meta) {
@@ -127,7 +137,7 @@ public final class ElxTable {
 
   private static void validateHook(Memory memory, int method, long value) {
     Type type = Slot.type(memory, value);
-    if (type == Type.NULL || type == Type.FUNCTION) {
+    if (type == Type.NULL || type == Type.VOID || type == Type.FUNCTION) {
       return;
     }
     throw new IllegalArgumentException("Metamethod " + Metamethod.at(method) + " requires a function");
@@ -136,7 +146,7 @@ public final class ElxTable {
   /**
    * Returns the number of live key/value pairs.
    *
-   * @param memory memory containing the table
+   * @param memory    memory containing the table
    * @param container table pointer
    * @return number of occupied entries
    */
@@ -147,22 +157,22 @@ public final class ElxTable {
   /**
    * Returns the power-of-two probe capacity of a table.
    *
-   * @param memory memory containing the table
+   * @param memory    memory containing the table
    * @param container table pointer
    * @return probe capacity
    */
-  static int capacity(Memory memory, long container) {
+  public static int capacity(Memory memory, long container) {
     return (int) Slot.bits(memory, Slot.address(container, CAPACITY));
   }
 
   /**
    * Returns the key/value backing-region pointer of a table.
    *
-   * @param memory memory containing the table
+   * @param memory    memory containing the table
    * @param container table pointer
    * @return backing region pointer
    */
-  static long data(Memory memory, long container) {
+  public static long data(Memory memory, long container) {
     return Slot.bits(memory, Slot.address(container, DATA));
   }
 
@@ -174,8 +184,8 @@ public final class ElxTable {
    * Returns the value slot owning a key, or zero when the key is absent.
    *
    * @param memory memory containing the table
-   * @param table table pointer
-   * @param key source key slot
+   * @param table  table pointer
+   * @param key    source key slot
    * @return value slot address, or zero for an absent key
    */
   public static long own(Memory memory, long table, long key) {
@@ -189,8 +199,8 @@ public final class ElxTable {
    * Reads a key and writes its value or {@link Type#NULL} to {@code result}.
    *
    * @param memory memory containing the table
-   * @param table table pointer
-   * @param key source key slot
+   * @param table  table pointer
+   * @param key    source key slot
    * @param result destination slot
    */
   public static void get(Memory memory, long table, long key, long result) {
@@ -198,7 +208,7 @@ public final class ElxTable {
     int index = ElxTable.find(memory, data, ElxTable.capacity(memory, table), key);
     long at = Slot.address(data, index * 2);
     if (Slot.type(memory, at) == Type.INVALID) {
-      Slot.write(memory, result, Type.NULL, 0);
+      Slot.write(memory, result, Type.VOID, 0);
     } else {
       Slot.copy(memory, result, at + Slot.SIZE, 1);
     }
@@ -208,8 +218,8 @@ public final class ElxTable {
    * Removes a key/value pair and repairs the affected probe cluster.
    *
    * @param memory memory containing the table
-   * @param table table pointer
-   * @param key source key slot
+   * @param table  table pointer
+   * @param key    source key slot
    * @return {@code true} when an entry was removed
    */
   public static boolean remove(Memory memory, long table, long key) {
@@ -239,6 +249,7 @@ public final class ElxTable {
         Slot.write(memory, item + Slot.SIZE, Type.NULL, 0);
       }
     }
+    modified(memory, table);
     Slot.write(memory, table, Type.INT, ElxTable.size(memory, table) - 1);
     return true;
   }
@@ -248,13 +259,13 @@ public final class ElxTable {
    * 75 percent. Existing operands are read before writes so aliases are safe;
    * average lookup is {@code O(1)}, while a resize is linear in table capacity.
    *
-   * @param heap owning ELX heap
+   * @param heap  owning ELX heap
    * @param table table receiving the entry
-   * @param key source key slot
+   * @param key   source key slot
    * @param value source value slot
    * @throws IllegalArgumentException if the key is {@link Type#INVALID} or NaN,
    *                                  or a metamethod hook has the wrong type
-   * @throws IllegalStateException if the heap or table is dead
+   * @throws IllegalStateException    if the heap or table is dead
    */
   public static void set(ElxHeap heap, long table, long key, long value) {
     Memory memory = heap.memory();
@@ -277,6 +288,9 @@ public final class ElxTable {
     long data = ElxTable.data(memory, table);
     int index = ElxTable.find(memory, data, capacity, key);
     boolean fresh = Slot.type(memory, Slot.address(data, index * 2)) == Type.INVALID;
+    if (fresh) {
+      modified(memory, table);
+    }
     if (fresh && ElxTable.size(memory, table) + 1 > capacity - capacity / 4) {
       int next = Math.multiplyExact(capacity, 2);
       long replacement = heap.allocate(ElxHeap.Layout.VALUES, Math.multiplyExact(next, 2));
@@ -318,7 +332,7 @@ public final class ElxTable {
    *
    * @param memory memory containing the table
    * @param result destination tuple of four slots
-   * @param table table pointer
+   * @param table  table pointer
    * @param cursor packed ordinal/index cursor, or a negative exhausted cursor
    */
   public static void next(Memory memory, long result, long table, long cursor) {
@@ -350,10 +364,10 @@ public final class ElxTable {
   }
 
   private static int find(Memory memory, long data, int capacity, long key) {
-    int index = (int) ValueOperations.hash(memory, key) & (capacity - 1);
+    int index = (int) RawValues.hash(memory, key) & (capacity - 1);
     for (; ; ) {
       long probe = Slot.address(data, index * 2);
-      if (Slot.type(memory, probe) == Type.INVALID || ValueOperations.equal(memory, probe, key)) {
+      if (Slot.type(memory, probe) == Type.INVALID || RawValues.equal(memory, probe, key)) {
         return index;
       }
       index = (index + 1) & (capacity - 1);
@@ -364,21 +378,21 @@ public final class ElxTable {
    * Combines two tables for ELX union, intersection, difference, or symmetric
    * difference operators.
    *
-   * @param heap owning ELX heap
-   * @param op table operator
+   * @param heap   owning ELX heap
+   * @param op     table operator
    * @param result destination slot
-   * @param left left table pointer
-   * @param right right table pointer
+   * @param left   left table pointer
+   * @param right  right table pointer
    * @throws IllegalArgumentException if {@code op} is unsupported
-   * @throws IllegalStateException if the heap or an operand is dead
+   * @throws IllegalStateException    if the heap or an operand is dead
    */
   public static void combine(ElxHeap heap, Op op, long result, long left, long right) {
     long output = create(heap);
-    copySide(heap, op == Op.BOR ? Op.IADD : op == Op.BXOR ? Op.ISUB : op, output, left, right);
-    if (op == Op.IADD) {
-      copySide(heap, Op.IADD, output, right, left);
+    copySide(heap, op == Op.BOR ? Op.ADD : op == Op.BXOR ? Op.SUB : op, output, left, right);
+    if (op == Op.ADD) {
+      copySide(heap, Op.ADD, output, right, left);
     } else if (op == Op.BOR || op == Op.BXOR) {
-      copySide(heap, Op.ISUB, output, right, left);
+      copySide(heap, Op.SUB, output, right, left);
     }
     Slot.write(heap.memory(), result, Type.TABLE, output);
   }
@@ -391,7 +405,7 @@ public final class ElxTable {
       if (Slot.type(memory, key) == Type.INVALID) {
         continue;
       }
-      boolean include = op == Op.IADD || (op == Op.BAND) == has(memory, other, key);
+      boolean include = op == Op.ADD || (op == Op.BAND) == has(memory, other, key);
       if (include) {
         set(heap, output, key, key + Slot.SIZE);
       }

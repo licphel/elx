@@ -1,0 +1,15 @@
+native function seed(args...);
+native function rand(args...);
+native function randl(args...);
+native function randf(args...);
+native function randd(args...);
+native function randb(args...);
+
+return {
+  seed=seed,
+  rand=rand,
+  randl=randl,
+  randf=randf,
+  randd=randd,
+  randb=randb
+};

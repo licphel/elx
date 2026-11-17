@@ -84,7 +84,7 @@ public final class Arena {
    * @param bytes requested payload size
    * @return allocation base address, aligned to its size class
    * @throws IllegalArgumentException if the size exceeds the supported class range
-   * @throws OutOfMemoryError if the 32-bit ELX address space cannot grow
+   * @throws OutOfMemoryError         if the 32-bit ELX address space cannot grow
    */
   public long allocate(int bytes) {
     if (bytes < 0 || bytes > 1 << MAX_CLASS) {
@@ -155,7 +155,7 @@ public final class Arena {
    * cleared again when reused.</p>
    *
    * @param address allocation base address
-   * @throws ArithmeticException if the address does not fit the ELX address space
+   * @throws ArithmeticException      if the address does not fit the ELX address space
    * @throws IllegalArgumentException if the address is not a live allocation base
    */
   public void free(long address) {
@@ -175,16 +175,16 @@ public final class Arena {
   }
 
   /**
-     * Finds the live allocation containing an address.
-     *
-     * <p>Lookup uses the treap of live extents and therefore has expected
-     * {@code O(log R)} complexity. The result is the allocation base, not the
-     * supplied interior address.</p>
-     *
-     * @param address address inside a live allocation
-     * @return allocation base address
-     * @throws ArithmeticException if the address does not fit the ELX address space
-     * @throws IllegalArgumentException if no live allocation contains the address
+   * Finds the live allocation containing an address.
+   *
+   * <p>Lookup uses the treap of live extents and therefore has expected
+   * {@code O(log R)} complexity. The result is the allocation base, not the
+   * supplied interior address.</p>
+   *
+   * @param address address inside a live allocation
+   * @return allocation base address
+   * @throws ArithmeticException      if the address does not fit the ELX address space
+   * @throws IllegalArgumentException if no live allocation contains the address
    */
   public long owner(long address) {
     int value = Math.toIntExact(address), at = root, candidate = -1;

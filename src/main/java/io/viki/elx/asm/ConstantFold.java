@@ -37,25 +37,21 @@ final class ConstantFold {
   static @Nullable Value unary(Op op, int control, Value value) {
     Type type = value.type();
     long bits = value.bits();
-    if (op == Op.CX_TYPE) {
+    if (op == Op.TYPE) {
       return new Value(Type.UBYTE, Byte.toUnsignedLong(type.tag()));
     }
     if (!type.numeric()) {
       return null;
     }
-    if ((op == Op.INEG || op == Op.FNEG || op == Op.BNOT) && Instr.type(control) != type) {
-      return null;
-    }
+
     try {
       return switch (op) {
-        case CX_BITS -> new Value(Type.ULONG, bits);
-        case CX_CONVERT -> new Value(Type.fromTag((byte) control), Type.cast(bits, type, Type.fromTag((byte) control)));
-        case INEG, FNEG ->
+        case CONVERT -> new Value(Type.fromTag((byte) control), Type.cast(bits, type, Type.fromTag((byte) control)));
+        case NEG ->
             new Value(type, type.integer() ? Type.normalize(-bits, type) : bits ^ (type == Type.FLOAT ? 0x80000000L : Long.MIN_VALUE));
         case BNOT -> type.integer() ? new Value(type, Type.normalize(~bits, type)) : null;
-        case CX_BOOL_NOT -> type == Type.BOOL ? new Value(Type.BOOL, bits == 0 ? 1 : 0) : null;
-        case CX_INCR, CX_DECR ->
-            type.integer() ? new Value(type, Type.normalize(bits + (op == Op.CX_INCR ? 1 : -1), type)) : null;
+        case NOT -> type == Type.BOOL ? new Value(Type.BOOL, bits == 0 ? 1 : 0) : null;
+        case INC, DEC -> type.integer() ? new Value(type, Type.normalize(bits + (op == Op.INC ? 1 : -1), type)) : null;
         default -> null;
       };
     } catch (ArithmeticException | IllegalArgumentException failure) {
@@ -68,35 +64,17 @@ final class ConstantFold {
     if (!a.numeric() || !b.numeric()) {
       return null;
     }
-    boolean dynamic = op.integrated();
-    Op scalar = switch (op) {
-      case CX_ADD -> Op.IADD;
-      case CX_SUB -> Op.ISUB;
-      case CX_MUL -> Op.IMUL;
-      case CX_DIV -> Op.IDIV;
-      case CX_REM -> Op.IREM;
-      case CX_AND -> Op.BAND;
-      case CX_OR -> Op.BOR;
-      case CX_XOR -> Op.BXOR;
-      case CX_SHL -> Op.SHL;
-      case CX_SHR -> Op.SHR;
-      case CX_USHR -> Op.USHR;
-      case CX_CMP, CX_EQUAL -> Op.ICMP;
-      default -> op;
-    };
-    Type kind = dynamic ? Type.binary(a, b) : Instr.type(control);
-    if (!dynamic && (a != kind || b != kind)) {
+    Type kind = Type.binary(a, b);
+    Op scalar = op;
+    if (op == Op.COMPARE && a != b) {
       return null;
     }
-    if ((op == Op.CX_CMP || op == Op.CX_EQUAL) && a != b) {
-      return null; // mixed numeric equality has exactness rules beyond widening.
-    }
     long x = Type.cast(left.bits(), a, kind), y = Type.cast(right.bits(), b, kind);
-    if (scalar == Op.ICMP || scalar == Op.UCMP || scalar == Op.FCMP) {
-      Instr.Relation relation = op == Op.CX_EQUAL ? Instr.Relation.EQ : Instr.relation(control);
+    if (scalar == Op.COMPARE) {
+      Instr.Relation relation = Instr.relation(control);
       boolean result;
       if (kind.integer()) {
-        int compare = kind.unsigned() || scalar == Op.UCMP ? Long.compareUnsigned(x, y) : Long.compare(x, y);
+        int compare = kind.unsigned() ? Long.compareUnsigned(x, y) : Long.compare(x, y);
         result = switch (relation) {
           case EQ -> compare == 0;
           case NE -> compare != 0;
@@ -121,20 +99,20 @@ final class ConstantFold {
     if (kind.integer()) {
       long result;
       switch (scalar) {
-        case IADD -> result = x + y;
-        case ISUB -> result = x - y;
-        case IMUL -> result = x * y;
-        case IDIV, UDIV -> {
+        case ADD -> result = x + y;
+        case SUB -> result = x - y;
+        case MUL -> result = x * y;
+        case DIV -> {
           if (y == 0) {
             return null;
           }
-          result = kind.unsigned() || scalar == Op.UDIV ? Long.divideUnsigned(x, y) : x / y;
+          result = kind.unsigned() ? Long.divideUnsigned(x, y) : x / y;
         }
-        case IREM, UREM -> {
+        case MOD -> {
           if (y == 0) {
             return null;
           }
-          result = kind.unsigned() || scalar == Op.UREM ? Long.remainderUnsigned(x, y) : x % y;
+          result = kind.unsigned() ? Long.remainderUnsigned(x, y) : x % y;
         }
         case BAND -> result = x & y;
         case BOR -> result = x | y;
@@ -152,11 +130,11 @@ final class ConstantFold {
     if (kind == Type.FLOAT) {
       float l = Float.intBitsToFloat((int) x), r = Float.intBitsToFloat((int) y), result;
       switch (scalar) {
-        case FADD, IADD -> result = l + r;
-        case FSUB, ISUB -> result = l - r;
-        case FMUL, IMUL -> result = l * r;
-        case FDIV, IDIV -> result = l / r;
-        case FREM, IREM -> result = l % r;
+        case ADD -> result = l + r;
+        case SUB -> result = l - r;
+        case MUL -> result = l * r;
+        case DIV -> result = l / r;
+        case MOD -> result = l % r;
         default -> {
           return null;
         }
@@ -168,11 +146,11 @@ final class ConstantFold {
     }
     double l = Double.longBitsToDouble(x), r = Double.longBitsToDouble(y), result;
     switch (scalar) {
-      case FADD, IADD -> result = l + r;
-      case FSUB, ISUB -> result = l - r;
-      case FMUL, IMUL -> result = l * r;
-      case FDIV, IDIV -> result = l / r;
-      case FREM, IREM -> result = l % r;
+      case ADD -> result = l + r;
+      case SUB -> result = l - r;
+      case MUL -> result = l * r;
+      case DIV -> result = l / r;
+      case MOD -> result = l % r;
       default -> {
         return null;
       }

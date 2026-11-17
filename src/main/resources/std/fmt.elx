@@ -1,0 +1,9 @@
+native function format(args...);
+native function printf(args...);
+local str = require("str");
+
+return {
+  format=format,
+  printf=printf,
+  interpolate=str.format
+};

@@ -33,18 +33,33 @@ import java.util.List;
  * Positional and list-spread entries leave the name empty; named and table-spread entries carry
  * the parameter name used by the call binder.
  *
- * @param names parameter names for named arguments, or empty strings for positional arguments
- * @param kinds source kind for each argument position
+ * @param names          parameter names for named arguments, or empty strings for positional arguments
+ * @param kinds          source kind for each argument position
+ * @param resultCapacity maximum number of result slots consumed by this call
  */
-public record CallSite(List<String> names, List<ArgumentKind> kinds) {
+public record CallSite(List<String> names, List<ArgumentKind> kinds, int resultCapacity) {
   /**
-   * Validates and copies a call-site layout.
+   * Creates a call site that reserves the full language result window.
    *
    * @param names parameter names aligned with {@code kinds}
    * @param kinds argument source kinds aligned with {@code names}
+   */
+  public CallSite(List<String> names, List<ArgumentKind> kinds) {
+    this(names, kinds, io.viki.elx.lib.Call.MAX_RESULTS);
+  }
+
+  /**
+   * Validates and copies a call-site layout.
+   *
+   * @param names          parameter names aligned with {@code kinds}
+   * @param kinds          argument source kinds aligned with {@code names}
+   * @param resultCapacity maximum number of consumed results
    * @throws IllegalArgumentException if the lists differ in size or a name does not match its kind
    */
   public CallSite {
+    if (resultCapacity < 0 || resultCapacity > io.viki.elx.lib.Call.MAX_RESULTS) {
+      throw new IllegalArgumentException("Invalid result capacity: " + resultCapacity);
+    }
     names = List.copyOf(names);
     kinds = List.copyOf(kinds);
     if (names.size() != kinds.size()) {

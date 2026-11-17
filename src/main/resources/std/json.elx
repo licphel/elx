@@ -1,0 +1,7 @@
+native function parse(args...);
+native function stringify(args...);
+
+return {
+  parse=parse,
+  stringify=stringify
+};

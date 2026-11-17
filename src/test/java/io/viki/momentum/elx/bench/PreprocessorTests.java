@@ -4,17 +4,18 @@ import io.viki.elx.SyntaxException;
 import io.viki.elx.Type;
 import io.viki.elx.asm.Instr;
 import io.viki.elx.asm.Op;
-import io.viki.elx.asm.Optimization;
 import io.viki.elx.bench.Bench;
 import io.viki.elx.compile.Compiler;
+import io.viki.elx.compile.IncludeResolver;
 import io.viki.elx.lib.Library;
 import io.viki.elx.memory.Slot;
 import io.viki.elx.vm.ScriptTrace;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
-/** Expansion, source locations, privacy and len under both ISA levels and memory backends. */
+/** Expansion, include/condition behavior, source locations and len on both memory backends. */
 public final class PreprocessorTests {
   private PreprocessorTests() { }
 
@@ -27,27 +28,24 @@ public final class PreprocessorTests {
       source = new String(input.readAllBytes(), StandardCharsets.UTF_8);
     }
     Compiler compiler = new Compiler();
-    for (Optimization mode : Optimization.values()) {
-      for (boolean nativeMemory : new boolean[] {false, true}) {
+    for (boolean nativeMemory : new boolean[] {false, true}) {
         try (Bench.Runtime runtime = new Bench.Runtime(nativeMemory)) {
-          runtime.vm.execute(compiler.compile("macros.elx", source, Library.EMPTY, mode));
+          runtime.vm.execute(compiler.compile("macros.elx", source, Library.EMPTY));
           check(Slot.type(runtime.memory, runtime.vm.results()) == Type.BOOL
               && Slot.bits(runtime.memory, runtime.vm.results()) == 1, "macro suite result");
-          runtime.vm.execute(compiler.compile("line.elx", "#define LINE LINECOUNT\nlocal n=LINE;\nreturn n,LINECOUNT;", Library.EMPTY, mode));
+          runtime.vm.execute(compiler.compile("line.elx", "#define LINE LINECOUNT\nlocal n=LINE;\nreturn n,LINECOUNT;", Library.EMPTY));
           check(Slot.bits(runtime.memory, runtime.vm.results()) == 2, "macro LINECOUNT call site");
           check(Slot.bits(runtime.memory, runtime.vm.results() + Slot.SIZE) == 3, "direct LINECOUNT");
-          runtime.vm.execute(compiler.compile("#define X 1\nlocal a=X;\n#define X 2\nreturn a,X;", Library.EMPTY, mode));
+          runtime.vm.execute(compiler.compile("#define X 1\nlocal a=X;\n#define X 2\nreturn a,X;", Library.EMPTY));
           check(Slot.bits(runtime.memory, runtime.vm.results()) == 1
               && Slot.bits(runtime.memory, runtime.vm.results() + Slot.SIZE) == 2, "definition order");
-          runtime.vm.execute(compiler.compile("local list=[1];local a=len(list);list[1]=2;return a,len(list);", Library.EMPTY, mode));
+          runtime.vm.execute(compiler.compile("local list=[1];local a=len(list);list[1]=2;return a,len(list);", Library.EMPTY));
           check(Slot.bits(runtime.memory, runtime.vm.results()) == 1
               && Slot.bits(runtime.memory, runtime.vm.results() + Slot.SIZE) == 2, "len observes mutation");
-          var internal = compiler.compileInternal("generated", "_private=8;return _private;", Library.EMPTY);
-          runtime.vm.execute(internal);
-          runtime.vm.execute(compiler.compile("return sys.env['_private'];", Library.EMPTY, mode));
-          check(Slot.bits(runtime.memory, runtime.vm.results()) == 8, "no runtime name restriction");
+          runtime.vm.execute(compiler.compile("underscore.elx", "local _private=8;return _private;", Library.EMPTY));
+          check(Slot.bits(runtime.memory, runtime.vm.results()) == 8, "underscore identifier");
           try {
-            runtime.vm.execute(compiler.compile("failure.elx", "#define BAD(x) (1 / x)\n\nreturn BAD(0);", Library.EMPTY, mode));
+            runtime.vm.execute(compiler.compile("failure.elx", "#define BAD(x) (1 / x)\n\nreturn BAD(0);", Library.EMPTY));
             throw new AssertionError("Expected division failure");
           } catch (ArithmeticException failure) {
             boolean correct = false;
@@ -59,11 +57,17 @@ public final class PreprocessorTests {
             check(correct, "macro runtime error lost its source line");
           }
         }
+    }
+    for (String valid : new String[] {
+        "local _x=1;return _x;", "_x=1;return _x;", "function _f() {return 1};return _f();",
+        "function f(_x) {return _x};return f(3);", "local t={_x=4};return t._x;",
+        "#define _M 1\nreturn _M;",
+    }) {
+      try (Bench.Runtime runtime = new Bench.Runtime(false)) {
+        runtime.vm.execute(compiler.compile(valid));
       }
     }
     for (String invalid : new String[] {
-        "local _x=1;", "_x=1;", "return _x;", "function _f() {}", "function f(_x) {}",
-        "local t={};return t._x;", "#define _M 1\nreturn 1;",
         "#define F(a,a) a\nreturn F(1,2);", "#define F(a...,b) a\nreturn 1;",
         "#define F(a,b) a\nreturn F(1);", "#define F(a) a\nreturn F(1,2);",
         "#define F(a) a\nreturn F([1,2);", "#define FILENAME 'x'\nreturn 1;",
@@ -81,15 +85,44 @@ public final class PreprocessorTests {
       check(failure.span().line() == 3, "macro syntax error lost its source line");
       check(failure.span().start() == malformed.lastIndexOf("BROKEN"), "macro syntax error lost its source offset");
     }
-    var raw = compiler.compileRaw("len.elx", "local t={};return len(t);", Library.EMPTY);
-    boolean inline = false;
-    for (int pc = 0; pc < raw.wordCount();) {
-      Op op = Instr.op(raw.word(pc));
-      if (op == Op.CX_LEN) inline = true;
-      pc += op.format().words();
+    IncludeResolver resolver = (including, requested) -> switch (requested) {
+      case "defs.elx" -> new IncludeResolver.Source("virtual/defs.elx", "#define FEATURE 1\n#pragma once\n#include \"nested.elx\"\n");
+      case "nested.elx" -> new IncludeResolver.Source("virtual/nested.elx", "#define NESTED 6\n");
+      default -> throw new java.io.IOException("No virtual include " + requested);
+    };
+    Compiler included = new Compiler(resolver);
+    try (Bench.Runtime runtime = new Bench.Runtime(false)) {
+      runtime.vm.execute(included.compile("virtual/main.elx", """
+          #include "defs.elx"
+          #include "defs.elx"
+          #if defined(FEATURE) && NESTED * 2 == 12
+          local result = NESTED
+          #elif FEATURE == 0
+          local result = -1
+          #else
+          local result = -2
+          #endif
+          #ifndef DISABLED
+          return result
+          #else
+          return 0
+          #endif
+          """, Library.EMPTY));
+      check(Slot.getInt(runtime.memory, runtime.vm.results()) == 6, "include guards and conditionals");
     }
-    check(inline, "len was not emitted as an instruction");
-    System.out.println("ELX macros/variadics/len/privacy: both ISA levels and memory backends passed");
+    try {
+      included.compile("virtual/main.elx", "#include \"missing.elx\"\nreturn 1", Library.EMPTY);
+      throw new AssertionError("Expected missing include failure");
+    } catch (SyntaxException failure) {
+      check(failure.getMessage().contains("virtual/main.elx"), "include resolution error lost source location");
+    }
+    try {
+      compiler.compile("nested.elx", "#if 1\n#if 0\n#endif", Library.EMPTY);
+      throw new AssertionError("Expected unmatched conditional failure");
+    } catch (SyntaxException failure) {
+      check(failure.getMessage().contains("nested.elx"), "conditional error lost source location");
+    }
+    System.out.println("ELX preprocessing: macro, conditional, include, source-map and underscore checks passed");
   }
 
   private static void check(boolean valid, String message) {

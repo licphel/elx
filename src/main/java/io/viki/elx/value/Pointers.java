@@ -46,7 +46,7 @@ public final class Pointers {
    * Returns the number of values produced by dereferencing a pointer/list value.
    *
    * @param memory memory containing the value
-   * @param value source value slot
+   * @param value  source value slot
    * @return list length, or one for a single pointer
    * @throws IllegalArgumentException if the value is neither a list nor pointer
    */
@@ -64,9 +64,9 @@ public final class Pointers {
   /**
    * Creates a pointer to a register in a live local frame.
    *
-   * @param heap owning ELX heap
+   * @param heap       owning ELX heap
    * @param frameToken frame identity recorded by the VM
-   * @param register register index
+   * @param register   register index
    * @return GC-managed pointer handle
    * @throws IllegalArgumentException if the register index is invalid
    */
@@ -77,7 +77,7 @@ public final class Pointers {
   /**
    * Creates a pointer to a closure capture slot.
    *
-   * @param heap owning ELX heap
+   * @param heap    owning ELX heap
    * @param closure closure allocation pointer
    * @param capture zero-based capture index
    * @return GC-managed pointer handle
@@ -89,9 +89,9 @@ public final class Pointers {
   /**
    * Creates a pointer to a linked constant slot.
    *
-   * @param heap owning ELX heap
+   * @param heap      owning ELX heap
    * @param constants constant-region pointer
-   * @param index zero-based constant index
+   * @param index     zero-based constant index
    * @return GC-managed pointer handle
    */
   public static long constant(ElxHeap heap, long constants, int index) {
@@ -101,9 +101,9 @@ public final class Pointers {
   /**
    * Creates a pointer to a global table entry, materializing a null slot if absent.
    *
-   * @param heap owning ELX heap
+   * @param heap    owning ELX heap
    * @param globals global table pointer
-   * @param key key slot identifying the global
+   * @param key     key slot identifying the global
    * @return GC-managed pointer handle
    */
   public static long global(ElxHeap heap, long globals, long key) {
@@ -123,9 +123,9 @@ public final class Pointers {
   /**
    * Creates a pointer to a table entry or list index.
    *
-   * @param heap owning ELX heap
+   * @param heap      owning ELX heap
    * @param container list or table value slot
-   * @param key key/index slot
+   * @param key       key/index slot
    * @return GC-managed pointer handle
    * @throws IllegalArgumentException if the container is not a list or table
    */
@@ -153,11 +153,11 @@ public final class Pointers {
    * owning frame is active. Table and list targets are looked up on every call,
    * so resize and hash-table relocation do not invalidate the handle.
    *
-   * @param heap owning ELX heap
-   * @param pointer pointer handle
+   * @param heap        owning ELX heap
+   * @param pointer     pointer handle
    * @param frameTokens active frame identities from newest to oldest
-   * @param bases active frame bases corresponding to {@code frameTokens}
-   * @param depth number of active frames
+   * @param bases       active frame bases corresponding to {@code frameTokens}
+   * @param depth       number of active frames
    * @return current destination slot address
    * @throws IllegalStateException if the handle, frame, entry, or index is dead
    */
@@ -213,12 +213,12 @@ public final class Pointers {
   /**
    * Writes one value through a resolved pointer handle.
    *
-   * @param heap owning ELX heap
-   * @param pointer pointer handle
-   * @param value source slot
+   * @param heap        owning ELX heap
+   * @param pointer     pointer handle
+   * @param value       source slot
    * @param frameTokens active frame identities
-   * @param bases active frame bases
-   * @param depth number of active frames
+   * @param bases       active frame bases
+   * @param depth       number of active frames
    * @throws IllegalStateException if the handle cannot be resolved
    */
   public static void write(ElxHeap heap, long pointer, long value, long[] frameTokens, long[] bases, int depth) {
@@ -228,10 +228,10 @@ public final class Pointers {
   /**
    * Tests whether a pointer handle refers to a heap-owned, non-local target.
    *
-   * @param heap owning ELX heap
+   * @param heap    owning ELX heap
    * @param pointer pointer handle
    * @return {@code true} when the handle can be pinned independently of a
-   *         register frame
+   * register frame
    */
   public static boolean canPin(ElxHeap heap, long pointer) {
     if (!heap.isAlive(pointer) || heap.layout(pointer) != ElxHeap.Layout.REFERENCE) {
@@ -243,11 +243,11 @@ public final class Pointers {
   /**
    * Returns the slot range containing arguments represented by a list/pointer value.
    *
-   * @param heap owning ELX heap
-   * @param value list or pointer value slot
+   * @param heap        owning ELX heap
+   * @param value       list or pointer value slot
    * @param frameTokens active frame identities
-   * @param bases active frame bases
-   * @param depth number of active frames
+   * @param bases       active frame bases
+   * @param depth       number of active frames
    * @return first argument slot
    * @throws IllegalStateException if a pointer target is no longer valid
    */
@@ -262,7 +262,7 @@ public final class Pointers {
    * Returns the argument count represented by a list/pointer value.
    *
    * @param memory memory containing the value
-   * @param value list or pointer value slot
+   * @param value  list or pointer value slot
    * @return list length or dereference count
    * @throws IllegalArgumentException if the value cannot be dereferenced
    */

@@ -1,0 +1,23 @@
+native function escape(args...);
+native function matches(args...);
+native function find(args...);
+native function findAll(args...);
+native function replace(args...);
+native function split(args...);
+native caseInsensitive: int;
+native multiline: int;
+native dotAll: int;
+native unicodeCase: int;
+
+return {
+  caseInsensitive=caseInsensitive,
+  multiline=multiline,
+  dotAll=dotAll,
+  unicodeCase=unicodeCase,
+  escape=escape,
+  matches=matches,
+  find=find,
+  findAll=findAll,
+  replace=replace,
+  split=split
+};

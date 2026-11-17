@@ -25,10 +25,7 @@
 package io.viki.elx.vm;
 
 import io.viki.elx.Type;
-import io.viki.elx.asm.Decomposer;
 import io.viki.elx.asm.Prototype;
-import io.viki.elx.lib.*;
-import io.viki.elx.memory.*;
 import io.viki.elx.lib.*;
 import io.viki.elx.memory.*;
 import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
@@ -36,13 +33,7 @@ import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 import org.jspecify.annotations.Nullable;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Thread-confined loader. New headers/pools/code/text are packed into one allocation
@@ -57,7 +48,6 @@ final class Linker implements AutoCloseable {
   private final Memory memory;
   private final Reference2IntOpenHashMap<Prototype> ids = new Reference2IntOpenHashMap<>();
   private final Reference2ObjectOpenHashMap<Library, DynamicLibrary> libraries = new Reference2ObjectOpenHashMap<>();
-  private final Reference2ObjectOpenHashMap<Prototype, Prototype> lowered = new Reference2ObjectOpenHashMap<>();
   private final Set<Prototype> roots = Collections.newSetFromMap(new IdentityHashMap<>());
   private @Nullable Prototype[] images = new Prototype[16];
   private long[] functions = new long[16], constants = new long[16], codes = new long[16];
@@ -68,8 +58,8 @@ final class Linker implements AutoCloseable {
   /**
    * Creates a linker borrowing the VM's heaps and memory.
    *
-   * @param vm owning VM used for host callback binding
-   * @param heap internal heap receiving packed images
+   * @param vm       owning VM used for host callback binding
+   * @param heap     internal heap receiving packed images
    * @param external external heap receiving host callbacks
    */
   Linker(VM vm, ElxHeap heap, ExtHeap external) {
@@ -255,7 +245,7 @@ final class Linker implements AutoCloseable {
         Slot.write(memory, out, Type.FUNCTION, functions[ids.getInt(function.code())]);
       } else if (entry instanceof LE_ExtObject nativeFunction) {
         Slot.write(memory, position, Type.INT, -1);
-        Slot.write(memory, position + Slot.SIZE, Type.EXTERNAL, external.add(Args.bind(vm, nativeFunction.function())));
+        Slot.write(memory, position + Slot.SIZE, Type.EXTERNAL, external.add(HostCalls.bind(vm, nativeFunction.function())));
         Slot.write(memory, out, Type.FUNCTION, position);
         position += HEADER_SLOTS * Slot.SIZE;
       } else if (entry instanceof LE_Bits value) {
@@ -276,13 +266,6 @@ final class Linker implements AutoCloseable {
       for (int i = 0; i < image.constantCount(); i++) {
         long out = Slot.address(pool, i);
         Symbol symbol = image.constantSymbol(i);
-        if (symbol != null && image.baseOnly() && symbol.definition() instanceof LE_Function function) {
-          Prototype dependency = lowered.computeIfAbsent(function.code(), Decomposer::lower);
-          long header = load(dependency);
-          roots.remove(dependency);
-          Slot.write(memory, out, Type.FUNCTION, header);
-          continue;
-        }
         if (symbol != null) {
           DynamicLibrary module = link(symbol.library());
           Slot.copy(memory, out, module.entry(symbol.index()), 1);
@@ -355,12 +338,10 @@ final class Linker implements AutoCloseable {
         iterator.remove();
       }
     }
-    lowered.values().removeIf(image -> !ids.containsKey(image));
   }
 
   @Override
   public void close() {
-    lowered.clear();
     roots.clear();
     ids.clear();
     libraries.clear();

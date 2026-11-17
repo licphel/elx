@@ -32,11 +32,15 @@ import java.util.*;
 final class InstructionFlow {
   final List<Node> nodes = new ArrayList<>();
   final int[] indices;
+  final List<CallSite> callSites;
   final BitSet targets = new BitSet(), addressed = new BitSet();
   final BitSet[] liveOut;
-  final int registers, parameters;
+  final int parameters;
+  final List<Integer> prelude = new ArrayList<>();
+  int registers;
 
-  InstructionFlow(Prototype image) {
+  InstructionFlow(Prototype image, List<CallSite> callSites) {
+    this.callSites = callSites;
     registers = image.registerCount();
     parameters = image.parameterCount();
     indices = new int[image.wordCount()];
@@ -48,7 +52,7 @@ final class InstructionFlow {
       if (node.target >= 0) {
         targets.set(node.target);
       }
-      if (node.op() == Op.CX_LOCAL_PTR) {
+      if (node.op() == Op.LOCALREF) {
         addressed.set(node.b());
       }
     }
@@ -59,7 +63,22 @@ final class InstructionFlow {
   }
 
   static boolean terminal(Op op) {
-    return op == Op.CX_RETURN || op == Op.CX_RETURN_INDIRECT || op == Op.CX_RETURN_DEREF || op == Op.TRAP;
+    return op == Op.RETURN || op == Op.RETURN0 || op == Op.RETURN1 || op == Op.RETURN_UNPACK;
+  }
+
+  private static int remap(int word, int[] registers) {
+    Op op = Instr.op(word);
+    int mask = op.registerMask();
+    if ((mask & 1) != 0) {
+      word = word & ~0xFF00 | registers[Instr.a(word)] << 8;
+    }
+    if ((mask & 2) != 0 || op == Op.LOCALREF) {
+      word = word & ~0xFF0000 | registers[Instr.b(word)] << 16;
+    }
+    if ((mask & 4) != 0) {
+      word = word & 0xFFFFFF | registers[Instr.c(word)] << 24;
+    }
+    return word;
   }
 
   Effect effect(Node n) {
@@ -67,87 +86,119 @@ final class InstructionFlow {
     boolean pure = false, barrier = false;
     int a = n.a(), b = n.b(), c = n.c();
     switch (n.op()) {
-      case NOP -> pure = true;
-      case LC -> {
+      case LOADK, LOADNULL, LOADVOID, LOADBOOL -> {
         def.set(a);
         pure = true;
       }
-      case MOVE, CX_TYPE, CX_BITS -> {
+      case MOVE, TYPE -> {
         use.set(b);
         def.set(a);
         pure = true;
       }
-      case CX_LEN, CX_IADD_CONST, LOAD8, LOAD16, LOAD32, LOAD64, CX_LOCAL_PTR -> {
+      case LOCALREF -> {
         use.set(b);
         def.set(a);
       }
-      case CX_CONVERT, CX_GUARD, INEG, FNEG, BNOT, CX_BOOL_NOT, CX_INCR, CX_DECR, CX_POS -> {
-        use.set(n.op() == Op.CX_GUARD ? a : b);
-        if (n.op() != Op.CX_GUARD) {
-          def.set(a);
-        }
-        barrier = true;
-      }
-      case IADD, ISUB, IMUL, IDIV, UDIV, IREM, UREM, FADD, FSUB, FMUL, FDIV, FREM, BAND, BOR, BXOR, SHL, SHR, USHR,
-           ICMP, UCMP, FCMP, EQ64, CX_PACK, LEA,
-           CX_ADD, CX_SUB, CX_MUL, CX_DIV, CX_REM, CX_AND, CX_OR, CX_XOR, CX_SHL, CX_SHR, CX_USHR, CX_CMP, CX_EQUAL,
-           CX_OPERATOR -> {
+      case CONVERT, NEG, POS, BNOT, NOT, INC, DEC, TOSTRING, LEN, GETREF,
+           ADDI, ADDK, SUBK, GETFIELD, GETI, HASH, GETMETA, GLOBALREF -> {
         use.set(b);
-        use.set(c);
         def.set(a);
-        barrier = n.op().integrated();
-      }
-      case STORE8, STORE16, STORE32, STORE64, CX_WRITE_PTR -> {
-        use.set(a);
-        use.set(b);
         barrier = true;
       }
-      case JUMP, TRAP -> {
-      }
-      case CX_BR_TRUE, CX_BR_FALSE, CX_BR_PRESENT -> use.set(a);
-      case CX_BR_ICMP -> {
-        use.set(a);
-        use.set(b);
-      }
-      case CX_BR_CMP -> {
+      case ADD, SUB, MUL, DIV, MOD, BAND, BOR, BXOR, SHL, SHR, USHR,
+           COMPARE, RAWEQUAL, GETTABLE, RAWGET, INDEXREF, SETMETA -> {
         use.set(b);
         use.set(c);
         def.set(a);
         barrier = true;
       }
-      case CX_GET_GLOBAL_CONST -> {
+      case GETENV -> {
+        def.set(a);
+        pure = true;
+      }
+      case NEWLIST, NEWTABLE, GETGLOBAL, GETUPVAL, SELF, UPVALREF, CONSTREF -> {
         def.set(a);
         barrier = true;
       }
-      case CX_ADD_CONST, CX_SUB_CONST, CX_GET_INDEX_CONST -> {
+      case SETGLOBAL, SETUPVAL -> {
+        use.set(a);
+        barrier = true;
+      }
+      case SETREF, APPEND, APPEND_UNPACK, SETFIELD, SETI -> {
+        use.set(a);
         use.set(b);
+        barrier = true;
+      }
+      case SETTABLE, RAWSET -> {
+        use.set(a);
+        use.set(b);
+        use.set(c);
+        barrier = true;
+      }
+      case JMP, RETURN0 -> {
+      }
+      case SAFEPOINT -> barrier = true;
+      case BR_TRUE, BR_FALSE, BR_PRESENT, BR_VOID -> use.set(a);
+      case BR_COMPARE -> {
+        use.set(b);
+        use.set(c);
         def.set(a);
         barrier = true;
       }
-      case CX_RETURN -> {
+      case RETURN -> {
         if (b > 0) {
           use.set(a, a + b);
         }
       }
-      case CX_CALL, CX_EX_CALL -> {
-        int control = n.words[1];
+      case RETURN1, RETURN_UNPACK -> use.set(a);
+      case CALL -> {
         use.set(b);
-        if (n.op() == Op.CX_EX_CALL) {
-          use.set(c);
-        }
-        int first = n.op() == Op.CX_CALL ? c : Instr.argumentBase(control), count = Instr.argumentCount(control);
+        int count = Instr.argumentCount(n.words[1]);
         if (count > 0) {
-          use.set(first, first + count);
+          use.set(c, c + count);
         }
-        if (Instr.resultCount(control) > 0) {
-          def.set(a, a + Instr.resultCount(control));
+        int results = Instr.resultCount(n.words[1]);
+        if (results > 0) {
+          def.set(a, a + results);
         }
         barrier = true;
       }
-      default -> {
-        use.set(0, registers);
+      case CALL_PACKED -> {
+        use.set(b);
+        use.set(c);
+        int count = n.words[1] & 255;
+        if (count > 0) {
+          def.set(a, a + count);
+        }
         barrier = true;
       }
+      case CALL_NAMED -> {
+        CallSite site = callSites.get(n.words[1]);
+        use.set(b);
+        if (!site.names().isEmpty()) {
+          use.set(c, c + site.names().size());
+        }
+        if (site.resultCapacity() > 0) {
+          def.set(a, a + site.resultCapacity());
+        }
+        barrier = true;
+      }
+      case CLOSURE -> {
+        use.set(b);
+        if (n.words[1] > 0) {
+          use.set(c, c + n.words[1]);
+        }
+        def.set(a);
+        barrier = true;
+      }
+      case UNPACK -> {
+        use.set(b);
+        if (n.words[1] > 0) {
+          def.set(a, a + n.words[1]);
+        }
+        barrier = true;
+      }
+      default -> throw new IllegalStateException("Missing register effects for " + n.op());
     }
     return new Effect(use, def, pure, barrier);
   }
@@ -175,7 +226,7 @@ final class InstructionFlow {
     if (terminal(n.op())) {
       return new int[0];
     }
-    if (n.op() == Op.JUMP) {
+    if (n.op() == Op.JMP) {
       return new int[] {destination(n)};
     }
     if (n.target >= 0) {
@@ -259,10 +310,48 @@ final class InstructionFlow {
   }
 
   Prototype emit(Assembler out) {
+    // Remove unused gaps left by narrowed call windows. Every bulk operand marks
+    // its complete interval, so ascending compaction preserves contiguous windows.
+    BitSet used = new BitSet(registers);
+    used.set(0, parameters);
+    for (int word : prelude) {
+      used.set(Instr.a(word));
+    }
+    for (Node n : nodes) {
+      if (n.removed) {
+        continue;
+      }
+      Effect effect = effect(n);
+      used.or(effect.reads());
+      used.or(effect.writes());
+      int mask = n.op().registerMask();
+      if ((mask & 1) != 0) {
+        used.set(n.a());
+      }
+      if ((mask & 2) != 0) {
+        used.set(n.b());
+      }
+      if ((mask & 4) != 0) {
+        used.set(n.c());
+      }
+    }
+    int[] registers = new int[this.registers];
+    int count = 0;
+    for (int r = used.nextSetBit(0); r >= 0; r = used.nextSetBit(r + 1)) {
+      registers[r] = count++;
+    }
+    for (Node n : nodes) {
+      if (!n.removed) {
+        n.words[0] = remap(n.words[0], registers);
+      }
+    }
     int[] labels = new int[indices.length];
     Arrays.fill(labels, -1);
     for (Node n : nodes) {
       labels[n.pc] = out.label();
+    }
+    for (int word : prelude) {
+      out.word(remap(word, registers));
     }
     for (Node n : nodes) {
       out.bind(labels[n.pc]);
@@ -282,7 +371,7 @@ final class InstructionFlow {
         }
       }
     }
-    return out.build(registers, parameters);
+    return out.build(Math.max(1, count), parameters);
   }
 
   static final class Node {

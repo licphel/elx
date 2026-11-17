@@ -3,10 +3,6 @@ package io.viki.elx.bench;
 import io.viki.elx.Type;
 import io.viki.elx.asm.Optimization;
 import io.viki.elx.asm.Prototype;
-import io.viki.elx.bench.Bench;
-import io.viki.elx.bench.GcPressureBench;
-import io.viki.elx.bench.GlobalsLibraryBench;
-import io.viki.elx.bench.PointerBench;
 import io.viki.elx.compile.Compiler;
 import io.viki.elx.lib.Library;
 import io.viki.elx.lib.ModuleResolver;
@@ -28,7 +24,7 @@ public final class CapabilitiesTests {
   private CapabilitiesTests() {}
   public static void main(String[] args) throws IOException { run(); }
   public static void run() throws IOException {
-    for(var selected: Optimization.values()) {
+    for(var selected: new Optimization[]{Optimization.O1}) {
     level=selected;
     for(boolean nativeMemory:new boolean[]{false,true}) {
       try(Bench.Runtime r=new Bench.Runtime(nativeMemory)) {
@@ -39,7 +35,7 @@ public final class CapabilitiesTests {
         r.vm.collect(true); // The handle survives as a result; dereferencing it still rejects its returned frame.
         expect(r,"local gc=require('gc');local x={v=42};local p=&x;gc.collect();return (*p).v",42);
         expect(r,"local x=1;local p=&x;local function f() { *p=5;return 1 } return *p+f(),x",2,5);
-        expect(r,"local total=0;for i,v in [3,4,5] { local p=&v;total+=*p } return total",12);
+        expect(r,"local total=0;for v in itr([3,4,5]) { local p=&v;total+=*p } return total",12);
         expect(r,"local function f(x) { local p=&f; if x==0 { return 0 } return (*p)(x-1)+1 } return f(3)",3);
         expect(r,"local x=1; if false { local p=&x } x+=2; return x",3);
         expect(r,"local x=1; for i=0,i<4,i++ { local p=&x; *p+=i } return x",7);
@@ -69,7 +65,7 @@ public final class CapabilitiesTests {
         expect(r,"local persistent=2;return persistent",2);
         expect(r,"local p=&persistent;*p=20;return persistent",20);
         AtomicInteger loads=new AtomicInteger();
-        r.vm.modules().resolver(name->{
+        r.vm.modules().addHandler(name->{
           if(name.equals("test:cached")){loads.incrementAndGet();return new ModuleResolver.Source(name,"return {value=42}");}
           if(name.equals("test:cycle"))return new ModuleResolver.Source(name,"return require('test:cycle')");
           return null;
@@ -82,12 +78,12 @@ public final class CapabilitiesTests {
         fails(r,"return require('test:cycle')","Circular require");
         fails(r,"return require('test:cycle')","Circular require");
         expect(r,"local math=require('math');return long(math.pow(2,8)),long(math.floor(2.9))",256,2);
-        expect(r,"local sys=require('sys');sys.env.hello=17;return hello,sys.remove(sys.env,'hello'),sys.env.hello==null",17,1,1);
+        expect(r,"local sys=require('sys');sys.env.hello=17;return hello,sys.remove(sys.env,'hello'),sys.env.hello==void",17,1,1);
         expect(r,"env.answer=41;env.answer+=1;return env.answer,answer",42,42);
-        expect(r,"local util=require('util');return util.base64_decode(util.base64_encode('hello'))=='hello'",1);
-        expect(r,"local str=require('str');return len('a中'),str.bytelen('a中'),str.upper('ab')=='AB'",2,4,1);
+        expect(r,"local util=require('util');return util.decodeBase64(util.encodeBase64('hello'))=='hello'",1);
+        expect(r,"local str=require('str');return len('a中'),str.codeAt('a中',1),str.toUpper('ab')=='AB'",2,20013,1);
         StringBuilder output=new StringBuilder();r.vm.output(output::append);
-        expect(r,"require('io').stdout('hello');print(' world');return 1",1);
+        expect(r,"require('fmt').printf('%s','hello');print(' world');return 1",1);
         check(output.toString().equals("hello world"+System.lineSeparator()),"print redirection");
         Path folder=Files.createTempDirectory("elx-module-test");
         try {
@@ -108,6 +104,7 @@ public final class CapabilitiesTests {
         } catch(ArithmeticException error) {
           boolean found=false;
           for(Throwable trace:error.getSuppressed())if(trace instanceof ScriptTrace)for(StackTraceElement frame:trace.getStackTrace())if("broken.elx".equals(frame.getFileName())&&frame.getLineNumber()==3)found=true;
+          if (!found) throw new AssertionError("script source location missing", error);
           check(found,"script source location missing");
         }
       }
@@ -128,7 +125,7 @@ public final class CapabilitiesTests {
   }
   private static void moduleNameCache(Bench.Runtime r) {
     AtomicInteger loads=new AtomicInteger();
-    r.vm.modules().resolver(name -> {
+    r.vm.modules().addHandler(name -> {
       if(!name.equals("test:hot"))return null;
       loads.incrementAndGet();return new ModuleResolver.Source(name,"return {value=17}");
     });

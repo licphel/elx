@@ -56,14 +56,17 @@ final class Correctness {
       }
     }
 
-    for (Optimization optimization : Optimization.values()) {
+    for (Optimization optimization : new Optimization[] {Optimization.O1}) {
       Prototype code = new Compiler().compile(RESOURCE, program.toString(), Builtins.standard(), optimization);
-      try (Bench.Runtime runtime = new Bench.Runtime(false)) {
-        runtime.vm.link(Builtins.standard());
-        runtime.vm.output(System.out::print);
-        runtime.vm.execute(code);
+      for (boolean nativeMemory : new boolean[] {false, true}) {
+        try (Bench.Runtime runtime = new Bench.Runtime(nativeMemory)) {
+          runtime.vm.link(Builtins.standard());
+          runtime.vm.output(System.out::print);
+          runtime.vm.execute(code);
+        }
+        System.out.println("ELX correctness passed: " + optimization + ", "
+            + (nativeMemory ? "native" : "Java") + " memory, " + syntaxChecks + " syntax-error cases");
       }
-      System.out.println("ELX correctness passed: " + optimization + ", " + syntaxChecks + " syntax-error cases");
     }
   }
 

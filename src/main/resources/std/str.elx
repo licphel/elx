@@ -1,0 +1,49 @@
+native function charAt(args...);
+native function codeAt(args...);
+native function fromCode(args...);
+native function toUpper(args...);
+native function toLower(args...);
+native function sub(args...);
+native function trim(args...);
+native function trimStart(args...);
+native function trimEnd(args...);
+native function contains(args...);
+native function containsIgnoreCase(args...);
+native function startsWith(args...);
+native function endsWith(args...);
+native function index(args...);
+native function lastIndex(args...);
+native function isSameIgnoreCase(args...);
+native function replace(args...);
+native function split(args...);
+native function join(args...);
+native function repeat(args...);
+native function padStart(args...);
+native function padEnd(args...);
+native function format(args...);
+
+return {
+  charAt=charAt,
+  codeAt=codeAt,
+  fromCode=fromCode,
+  toUpper=toUpper,
+  toLower=toLower,
+  sub=sub,
+  trim=trim,
+  trimStart=trimStart,
+  trimEnd=trimEnd,
+  contains=contains,
+  containsIgnoreCase=containsIgnoreCase,
+  startsWith=startsWith,
+  endsWith=endsWith,
+  index=index,
+  lastIndex=lastIndex,
+  isSameIgnoreCase=isSameIgnoreCase,
+  replace=replace,
+  split=split,
+  join=join,
+  repeat=repeat,
+  padStart=padStart,
+  padEnd=padEnd,
+  format=format
+};

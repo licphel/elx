@@ -26,8 +26,8 @@ package io.viki.elx;
 
 import io.viki.elx.asm.Prototype;
 import io.viki.elx.memory.*;
-import org.jspecify.annotations.Nullable;
 import io.viki.elx.vm.VM;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Objects;
 
@@ -103,11 +103,11 @@ public final class Context implements AutoCloseable {
    *
    * <p>Managed references remain rooted until the returned pin is closed. Primitive values are
    * copied into an independent pin, while external values are retained by the configured
-   * {@link ExternalHeapFactory}. A missing global or a global containing ELX {@code null}
-   * produces a primitive pin whose {@link Pin#get()} returns Java {@code null}.
+   * {@link ExternalHeapFactory}. A missing global produces {@link VoidValue#INSTANCE}; an explicit ELX null
+   * produces a primitive pin whose {@link Pin#get()} returns Java null.
    *
    * @param name global name to resolve
-   * @param <T> Java type expected by the caller
+   * @param <T>  Java type expected by the caller
    * @return a non-null pin representing the global value, which may itself be null
    * @throws IllegalStateException if this context has been closed
    */
@@ -145,11 +145,11 @@ public final class Context implements AutoCloseable {
    * storage. Returned results have the same independent lifetime as {@link #execute(Prototype)}.
    *
    * @param image compiled function
-   * @param args address of the first input slot, or zero when {@code count} is zero
+   * @param args  address of the first input slot, or zero when {@code count} is zero
    * @param count number of input slots
    * @return caller-owned snapshot of the returned values
    * @throws IllegalArgumentException if the function rejects the supplied arguments
-   * @throws IllegalStateException if the context is closed or execution fails
+   * @throws IllegalStateException    if the context is closed or execution fails
    */
   public Results execute(Prototype image, long args, int count) {
     ensureOpen();
@@ -160,18 +160,18 @@ public final class Context implements AutoCloseable {
    * Executes a loaded function in this context and retains its returned values.
    *
    * @param function live function handle belonging to this context's VM
-   * @param args address of the first input slot, or zero when {@code count} is zero
-   * @param count number of input slots
+   * @param args     address of the first input slot, or zero when {@code count} is zero
+   * @param count    number of input slots
    * @return caller-owned snapshot of the returned values
    * @throws IllegalArgumentException if the handle or supplied arguments are invalid
-   * @throws IllegalStateException if the context is closed or execution fails
+   * @throws IllegalStateException    if the context is closed or execution fails
    */
   public Results execute(long function, long args, int count) {
     ensureOpen();
     return new Results(this, vm.execute(function, args, count));
   }
 
-  @SuppressWarnings("all")
+  @SuppressWarnings({"all", "unchecked"})
   <T extends @Nullable Object> Pin<T> pinSlot(long slot) {
     ensureOpen();
     Type type = Slot.type(memory, slot);
@@ -181,11 +181,12 @@ public final class Context implements AutoCloseable {
     }
     if (Type.isManagedReference(type)) {
       Pin.Heap<Long> rooted = heap.pin(bits, PinMode.STRONG);
-      return new Pin<>() {
+
+      return (Pin<T>) new Pin<Object>() {
         @Override
-        public T get() {
+        public Object get() {
           long address = rooted.address();
-          return (T) (type == Type.STRING ? heap.exportString(address) : Long.valueOf(address));
+          return type == Type.STRING ? heap.exportString(address) : Long.valueOf(address);
         }
 
         @Override
@@ -219,8 +220,9 @@ public final class Context implements AutoCloseable {
       return;
     }
     vm.close();
-    registers.close();
+    // Host GC callbacks still borrow register windows while releasing external values.
     external.close();
+    registers.close();
     heap.close();
     memory.close();
     closed = true;

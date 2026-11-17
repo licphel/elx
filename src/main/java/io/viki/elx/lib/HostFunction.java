@@ -28,7 +28,7 @@ import io.viki.elx.memory.HeapVisitor;
 
 /**
  * Thread-confined host callback invoked by the VM's external-call bridge.
- * {@link Args} is borrowed only for the duration of {@link #invoke(Args)} and
+ * {@link Call} is borrowed only for the duration of {@link #invoke(Call)} and
  * must not be retained; implementations that capture ELX pointers should expose
  * them through {@link #trace(HeapVisitor)} so the VM can keep them alive.
  */
@@ -39,7 +39,7 @@ public interface HostFunction {
    *
    * @param args borrowed call context and result writer
    */
-  void invoke(Args args);
+  void invoke(Call args);
 
   /**
    * Visits ELX pointers retained by this callback.

@@ -28,7 +28,7 @@ assert(value==2 && step==20);
 // The same declaration form is used by script and macro variadic parameters.
 local function total(first,rest...) {
   local sum=first;
-  for v in rest { sum+=v; }
+  for v in itr(rest) { sum+=v; }
   return sum,len(rest);
 }
 local sum,count=total(1,2,3,4);
@@ -44,9 +44,8 @@ assert(only()==0 && only(1,2,3)==3);
 local owner={};
 function owner:count(rest...) { return len(rest); }
 assert(owner:count(1,2)==2);
-native function documented(values...: any) -> int;
+native function len(value: any) -> int;
 native function print(values...: any) -> void;
-native function io.print(values...: any) -> void;
 require('io').print();
 
 assert(len([])==0 && len([1,2,3])==3);
@@ -75,6 +74,6 @@ assert(referenceequal(sys,require('sys')));
 require('gc').collect();
 assert(sys.env.macro_global==43);
 assert(sys.remove(sys.env,'macro_global'));
-assert(macro_global==null);
+assert(macro_global==void);
 assert(FILENAME=='macros.elx');
 return true;

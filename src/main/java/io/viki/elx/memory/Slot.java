@@ -48,7 +48,7 @@ public final class Slot {
   /**
    * Returns the byte address of a slot at {@code index}.
    *
-   * @param base base address of a contiguous slot region
+   * @param base  base address of a contiguous slot region
    * @param index zero-based slot index
    * @return byte address of the indexed slot
    * @throws ArithmeticException if the address calculation overflows
@@ -60,7 +60,7 @@ public final class Slot {
   /**
    * Reads and decodes the type tag stored in a slot.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return decoded type
    */
@@ -71,7 +71,7 @@ public final class Slot {
   /**
    * Reads the slot's raw flags byte.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return raw flags
    */
@@ -82,9 +82,9 @@ public final class Slot {
   /**
    * Replaces the slot's raw flags byte.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
-   * @param flags new raw flags
+   * @param flags   new raw flags
    */
   public static void flags(Memory memory, long address, byte flags) {
     memory.store8(address + FLAGS_OFFSET, flags);
@@ -93,7 +93,7 @@ public final class Slot {
   /**
    * Reads the raw 64-bit payload.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return raw payload bits
    */
@@ -104,7 +104,7 @@ public final class Slot {
   /**
    * Tests whether the slot's type is traced by the GC.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return {@code true} when the slot contains a heap reference
    */
@@ -115,10 +115,10 @@ public final class Slot {
   /**
    * Writes a value with zero flags.
    *
-   * @param memory memory containing the destination slot
+   * @param memory  memory containing the destination slot
    * @param address destination slot byte address
-   * @param type value type
-   * @param bits raw payload bits
+   * @param type    value type
+   * @param bits    raw payload bits
    */
   public static void write(Memory memory, long address, Type type, long bits) {
     write(memory, address, type, (byte) 0, bits);
@@ -127,11 +127,11 @@ public final class Slot {
   /**
    * Writes a type tag, flags, and raw payload as one slot value.
    *
-   * @param memory memory containing the destination slot
+   * @param memory  memory containing the destination slot
    * @param address destination slot byte address
-   * @param type value type
-   * @param flags raw flags
-   * @param bits raw payload bits
+   * @param type    value type
+   * @param flags   raw flags
+   * @param bits    raw payload bits
    */
   public static void write(Memory memory, long address, Type type, byte flags, long bits) {
     memory.store8(address + TYPE_OFFSET, type.tag());
@@ -142,12 +142,12 @@ public final class Slot {
   /**
    * Copies a contiguous slot range with overlap-safe byte semantics.
    *
-   * @param memory memory containing both ranges
+   * @param memory      memory containing both ranges
    * @param destination destination range base
-   * @param source source range base
-   * @param values number of slots to copy
+   * @param source      source range base
+   * @param values      number of slots to copy
    * @throws IllegalArgumentException if {@code values} is negative
-   * @throws ArithmeticException if the byte count overflows
+   * @throws ArithmeticException      if the byte count overflows
    */
   public static void copy(Memory memory, long destination, long source, int values) {
     memory.copyBytes(destination, source, Math.multiplyExact(values, SIZE));
@@ -156,7 +156,7 @@ public final class Slot {
   /**
    * Reads the payload as an 8-bit integer.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return low eight payload bits
    */
@@ -167,7 +167,7 @@ public final class Slot {
   /**
    * Reads the payload as a 16-bit integer.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return low sixteen payload bits
    */
@@ -178,7 +178,7 @@ public final class Slot {
   /**
    * Reads the payload as a 32-bit integer.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return low 32 payload bits
    */
@@ -189,7 +189,7 @@ public final class Slot {
   /**
    * Reads the payload as a 64-bit integer.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return payload bits
    */
@@ -200,7 +200,7 @@ public final class Slot {
   /**
    * Reads the payload as raw IEEE-754 float bits.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return decoded float
    */
@@ -211,7 +211,7 @@ public final class Slot {
   /**
    * Reads the payload as raw IEEE-754 double bits.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return decoded double
    */
@@ -222,7 +222,7 @@ public final class Slot {
   /**
    * Reads a boolean as a nonzero payload test.
    *
-   * @param memory memory containing the slot
+   * @param memory  memory containing the slot
    * @param address slot byte address
    * @return {@code true} when the payload is nonzero
    */

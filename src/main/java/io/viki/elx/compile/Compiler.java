@@ -26,10 +26,9 @@ package io.viki.elx.compile;
 
 import io.viki.elx.Type;
 import io.viki.elx.asm.*;
-import io.viki.elx.lib.*;
 import io.viki.elx.lex.Lexer;
 import io.viki.elx.lex.Token;
-import io.viki.elx.memory.ElxHeap;
+import io.viki.elx.lib.*;
 import org.jspecify.annotations.Nullable;
 
 import java.util.*;
@@ -38,14 +37,28 @@ import java.util.*;
  * Compiles ELX source into validated register-based {@link Prototype} images.
  * Each invocation creates an independent parser, lexical-scope tree and
  * assembler, so compiler instances are safe to share when calls are made from
- * separate threads. Public entry points choose between optimized O1 images,
- * decomposed O0 images, raw reference images, and host-internal source that may
- * access underscore-prefixed names. Libraries supply the symbols and host
- * functions available to the source; the resulting prototype contains no
+ * separate threads. Public entry points produce optimized O1 or raw reference
+ * images. Libraries supply compile-time symbols; native declarations validate
+ * and bind those symbols before execution. The resulting prototype contains no
  * parser state.
  */
 public final class Compiler {
   private static final Symbol BF_LIB = Objects.requireNonNull(Builtins.standard().resolve("len"));
+  private final IncludeResolver includeResolver;
+
+  /** Creates a compiler whose includes are resolved from the filesystem. */
+  public Compiler() {
+    this(IncludeResolver.fileSystem());
+  }
+
+  /**
+   * Creates a compiler with an application-defined include source.
+   *
+   * @param includeResolver source resolver shared by all include directives
+   */
+  public Compiler(IncludeResolver includeResolver) {
+    this.includeResolver = Objects.requireNonNull(includeResolver);
+  }
 
   private static boolean numeric(Token token) {
     return switch (token) {
@@ -99,11 +112,11 @@ public final class Compiler {
 
   private static Op arithmetic(Token token) {
     return switch (token) {
-      case PLUS -> Op.IADD;
-      case MINUS -> Op.ISUB;
-      case STAR -> Op.IMUL;
-      case SLASH -> Op.IDIV;
-      case PERCENT -> Op.IREM;
+      case PLUS -> Op.ADD;
+      case MINUS -> Op.SUB;
+      case STAR -> Op.MUL;
+      case SLASH -> Op.DIV;
+      case PERCENT -> Op.MOD;
       case AMP -> Op.BAND;
       case PIPE -> Op.BOR;
       case CARET -> Op.BXOR;
@@ -114,25 +127,10 @@ public final class Compiler {
     };
   }
 
-  private static Op integratedArithmetic(Op op) {
-    return switch (op) {
-      case IADD -> Op.CX_ADD;
-      case ISUB -> Op.CX_SUB;
-      case IMUL -> Op.CX_MUL;
-      case IDIV -> Op.CX_DIV;
-      case IREM -> Op.CX_REM;
-      case BAND -> Op.CX_AND;
-      case BOR -> Op.CX_OR;
-      case BXOR -> Op.CX_XOR;
-      case SHL -> Op.CX_SHL;
-      case SHR -> Op.CX_SHR;
-      case USHR -> Op.CX_USHR;
-      default -> throw new IllegalArgumentException("Not a dynamic arithmetic operation: " + op);
-    };
-  }
-
   private static Instr.Relation relation(Token token) {
     return switch (token) {
+      case EQUAL_EQUAL -> Instr.Relation.EQ;
+      case BANG_EQUAL -> Instr.Relation.NE;
       case LESS -> Instr.Relation.LT;
       case LESS_EQUAL -> Instr.Relation.LE;
       case GREATER -> Instr.Relation.GT;
@@ -142,65 +140,66 @@ public final class Compiler {
   }
 
   /**
-     * Compiles a script against an empty library using the default O1 optimizer.
-     *
-     * @param source ELX source text
-     * @return optimized script prototype
+   * Compiles a script against an empty library using the default O1 optimizer.
+   *
+   * @param source ELX source text
+   * @return optimized script prototype
    */
   public Prototype compile(String source) {
     return compile(source, Library.EMPTY);
   }
 
   /**
-     * Compiles a script against the supplied host library using the default O1
-     * optimizer and a synthetic {@code <script>} source name.
-     *
-     * @param source ELX source text
-     * @param library symbols and host functions visible to the script
-     * @return optimized script prototype
+   * Compiles a script against the supplied host library using the default O1
+   * optimizer and a synthetic {@code <script>} source name.
+   *
+   * @param source  ELX source text
+   * @param library symbols and host functions visible to the script
+   * @return optimized script prototype
    */
   public Prototype compile(String source, Library library) {
     return compile("<script>", source, library);
   }
 
   /**
-     * Compiles a script with source metadata and the default O1 optimization.
-     *
-     * @param sourceName name used in diagnostics and source-line metadata
-     * @param source ELX source text
-     * @param library symbols and host functions visible to the script
-     * @return optimized script prototype
+   * Compiles a script with source metadata and the default O1 optimization.
+   *
+   * @param sourceName name used in diagnostics and source-line metadata
+   * @param source     ELX source text
+   * @param library    symbols and host functions visible to the script
+   * @return optimized script prototype
    */
   public Prototype compile(String sourceName, String source, Library library) {
     return Optimizer.optimize(compileRaw(sourceName, source, library));
   }
 
   /**
-     * Compiles a script with an explicit optimization level.
-     *
-     * @param source ELX source text
-     * @param library symbols and host functions visible to the script
-     * @param level requested O0 or O1 image form
-     * @return prototype emitted at the requested level
+   * Compiles a script with an explicit optimization level.
+   *
+   * @param source  ELX source text
+   * @param library symbols and host functions visible to the script
+   * @param level   requested O0 or O1 image form
+   * @return prototype emitted at the requested level
    */
   public Prototype compile(String source, Library library, Optimization level) {
     return compile("<script>", source, library, level);
   }
 
   /**
-     * Compiles a script with explicit source metadata and optimization level.
-     * O1 returns the fused image; O0 lowers integrated operations through the
-     * primitive instruction ABI.
-     *
-     * @param sourceName name used in diagnostics and source-line metadata
-     * @param source ELX source text
-     * @param library symbols and host functions visible to the script
-     * @param level requested O0 or O1 image form
-     * @return prototype emitted at the requested level
+   * Compiles a script with explicit source metadata and optimization level.
+   * O1 returns the fused image; O0 lowers integrated operations through the
+   * primitive instruction ABI.
+   *
+   * @param sourceName name used in diagnostics and source-line metadata
+   * @param source     ELX source text
+   * @param library    symbols and host functions visible to the script
+   * @param level      requested O0 or O1 image form
+   * @return prototype emitted at the requested level
    */
   public Prototype compile(String sourceName, String source, Library library, Optimization level) {
+    level.requireImplemented();
     Prototype image = compileRaw(sourceName, source, library);
-    return level == Optimization.O1 ? Optimizer.optimize(image) : Decomposer.lower(image);
+    return Optimizer.optimize(image);
   }
 
   /**
@@ -209,8 +208,8 @@ public final class Compiler {
    * testing.
    *
    * @param sourceName name used in diagnostics and source-line metadata
-   * @param source ELX source text
-   * @param library symbols and host functions visible to the script
+   * @param source     ELX source text
+   * @param library    symbols and host functions visible to the script
    * @return unoptimized reference prototype
    */
   public Prototype compileRaw(String sourceName, String source, Library library) {
@@ -223,8 +222,8 @@ public final class Compiler {
    * optimized as an ordinary O1 image.
    *
    * @param sourceName name used in diagnostics and source-line metadata
-   * @param source host-generated ELX source text
-   * @param library symbols and host functions visible to the glue
+   * @param source     host-generated ELX source text
+   * @param library    symbols and host functions visible to the glue
    * @return optimized internal prototype
    */
   public Prototype compileInternal(String sourceName, String source, Library library) {
@@ -232,44 +231,45 @@ public final class Compiler {
   }
 
   private Prototype compileRaw(String sourceName, String source, Library library, boolean internal) {
-    Parser parser = new Parser(Preprocessor.lexer(sourceName, source, internal), library, null);
+    Parser parser = new Parser(Preprocessor.lexer(sourceName, source, internal, includeResolver), library, null);
     parser.code.source(sourceName, "<script>");
     return parser.script();
   }
 
   /**
-     * Compiles one function expression against an empty library at O1.
-     *
-     * @param source function declaration, including the {@code function} keyword
-     * @return optimized function prototype
+   * Compiles one function expression against an empty library at O1.
+   *
+   * @param source function declaration, including the {@code function} keyword
+   * @return optimized function prototype
    */
   public Prototype compileFunction(String source) {
     return compileFunction(source, Library.EMPTY);
   }
 
   /**
-     * Compiles one function expression against a host library at O1.
-     *
-     * @param source function declaration, including the {@code function} keyword
-     * @param library symbols and host functions visible to the function
-     * @return optimized function prototype
+   * Compiles one function expression against a host library at O1.
+   *
+   * @param source  function declaration, including the {@code function} keyword
+   * @param library symbols and host functions visible to the function
+   * @return optimized function prototype
    */
   public Prototype compileFunction(String source, Library library) {
     return compileFunction(source, library, Optimization.O1);
   }
 
   /**
-     * Compiles one function expression with an explicit optimization level.
-     * The source must contain exactly one function declaration and no trailing
-     * tokens after it.
-     *
-     * @param source function declaration, including the {@code function} keyword
-     * @param library symbols and host functions visible to the function
-     * @param level requested O0 or O1 image form
-     * @return function prototype emitted at the requested level
+   * Compiles one function expression with an explicit optimization level.
+   * The source must contain exactly one function declaration and no trailing
+   * tokens after it.
+   *
+   * @param source  function declaration, including the {@code function} keyword
+   * @param library symbols and host functions visible to the function
+   * @param level   requested O0 or O1 image form
+   * @return function prototype emitted at the requested level
    */
   public Prototype compileFunction(String source, Library library, Optimization level) {
-    Parser parser = new Parser(Preprocessor.lexer("<function>", source, false), library, null);
+    level.requireImplemented();
+    Parser parser = new Parser(Preprocessor.lexer("<function>", source, false, includeResolver), library, null);
     parser.lexer.require(Token.FUNCTION);
     @Nullable String name = parser.kind() == Token.IDENTIFIER ? parser.lexer.text(parser.lexer.advance()) : null;
     parser.function(name);
@@ -278,7 +278,7 @@ public final class Compiler {
     if (result == null) {
       throw new IllegalStateException("Function was not compiled");
     }
-    return level == Optimization.O1 ? Optimizer.optimize(result) : Decomposer.lower(result);
+    return Optimizer.optimize(result);
   }
 
   private record Binding(int base, int capture, int width, boolean multiple) {
@@ -311,12 +311,13 @@ public final class Compiler {
   }
 
   private static final class Parser {
-    private static final int MAX_RESULTS = 4;
+    private static final int MAX_RESULTS = io.viki.elx.lib.Call.MAX_RESULTS;
     private final Lexer lexer;
     private final Library library;
     private final @Nullable Parser parent;
     private final Assembler code = new Assembler();
     private final Map<String, Binding> captured = new HashMap<>();
+    private final Map<String, Symbol> nativeSymbols;
     private final List<Capture> captures = new ArrayList<>();
     private Scope scope = new Scope(null, 0);
     private @Nullable Loop loop;
@@ -327,6 +328,7 @@ public final class Compiler {
       this.lexer = lexer;
       this.library = library;
       this.parent = parent;
+      nativeSymbols = parent == null ? new HashMap<>() : parent.nativeSymbols;
     }
 
     private Token kind() {
@@ -424,7 +426,9 @@ public final class Compiler {
     private Expr read(Binding binding) {
       int at = reserve(binding.width());
       if (binding.capture() >= 0) {
-        code.immediate(Op.CX_GET_CAPTURE, at, binding.width(), binding.capture());
+        for (int i = 0; i < binding.width(); i++) {
+          code.r(Op.GETUPVAL, at + i, binding.capture() + i, 0);
+        }
       } else {
         for (int i = 0; i < binding.width(); i++) {
           code.r(Op.MOVE, at + i, binding.base() + i, 0);
@@ -448,18 +452,20 @@ public final class Compiler {
       }
       int at = temporary();
       if (target.container() == -2) {
-        code.r(Op.CX_GET_GLOBAL, at, target.key(), 0);
+        int environment = temporary();
+        code.r(Op.GETENV, environment, 0, 0);
+        code.r(Op.GETTABLE, at, environment, target.key());
       } else if (target.container() == -3) {
-        code.rx(Op.CX_DEREF, at, target.key(), 0, 1);
+        code.r(Op.GETREF, at, target.key(), 0);
       } else {
-        code.r(Op.CX_GET_INDEX, at, target.container(), target.key());
+        code.r(Op.GETTABLE, at, target.container(), target.key());
       }
       return new Expr(at, Type.INVALID, 1, false, target, 1);
     }
 
     private Expr expand(Expr source, int count) {
       int at = reserve(count);
-      code.rx(Op.CX_DEREF, at, source.register(), 0, count);
+      code.rx(Op.UNPACK, at, source.register(), 0, count);
       return new Expr(at, Type.INVALID, count, count > 1, null, 1);
     }
 
@@ -480,11 +486,11 @@ public final class Compiler {
         int at = temporary();
         Target target = source.target();
         if (target != null && target.container() == -4) {
-          code.upper(Op.CX_CONST_PTR, at, target.key());
+          code.upper(Op.CONSTREF, at, target.key());
         } else if (target != null && target.binding() != null) {
           return addressOf(source);
         } else {
-          code.r(Op.CX_LOCAL_PTR, at, source.register(), 0);
+          code.r(Op.LOCALREF, at, source.register(), 0);
         }
         return new Expr(at, Type.PTR);
       }
@@ -503,7 +509,9 @@ public final class Compiler {
           throw lexer.error("Assignment changes value shape");
         }
         if (binding.capture() >= 0) {
-          code.immediate(Op.CX_SET_CAPTURE, data.register(), binding.width(), binding.capture());
+          for (int i = 0; i < binding.width(); i++) {
+            code.r(Op.SETUPVAL, data.register() + i, binding.capture() + i, 0);
+          }
         } else {
           for (int i = 0; i < binding.width(); i++) {
             code.r(Op.MOVE, binding.base() + i, data.register() + i, 0);
@@ -512,11 +520,13 @@ public final class Compiler {
       } else {
         data = scalar(data);
         if (target.container() == -3) {
-          code.r(Op.CX_WRITE_PTR, target.key(), data.register(), 0);
+          code.r(Op.SETREF, target.key(), data.register(), 0);
         } else if (target.container() == -2) {
-          code.r(Op.CX_SET_GLOBAL, target.key(), data.register(), 0);
+          int environment = temporary();
+          code.r(Op.GETENV, environment, 0, 0);
+          code.r(Op.SETTABLE, environment, target.key(), data.register());
         } else {
-          code.r(Op.CX_SET_INDEX, target.container(), target.key(), data.register());
+          code.r(Op.SETTABLE, target.container(), target.key(), data.register());
         }
       }
     }
@@ -548,7 +558,7 @@ public final class Compiler {
       while (kind() != Token.EOF) {
         statement();
       }
-      code.r(Op.CX_RETURN, 0, 0, 0);
+      code.r(Op.RETURN0, 0, 0, 0);
       return code.build(highWater, 0);
     }
 
@@ -622,7 +632,7 @@ public final class Compiler {
         }
         case NATIVE -> {
           lexer.advance();
-          nativeFunction();
+          nativeDeclaration();
         }
         case FUNCTION -> {
           lexer.advance();
@@ -678,38 +688,80 @@ public final class Compiler {
       return nestedTerminator || terminated;
     }
 
-    /** Parse an editor-facing declaration without binding or emitting runtime code. */
-    private void nativeFunction() {
+    /** Resolve declarations to host symbols before emitting any executable code. */
+    private void nativeDeclaration() {
       if (parent != null || scope.parent != null) {
         throw lexer.error("Native declarations are only allowed at script scope");
       }
-      lexer.require(Token.FUNCTION);
-      if (!lexer.match(Token.PRINT)) {
-        lexer.require(Token.IDENTIFIER);
-      }
+      boolean function = lexer.match(Token.FUNCTION);
+      Token.Span first = function && kind() == Token.PRINT ? lexer.advance() : lexer.require(Token.IDENTIFIER);
+      StringBuilder name = new StringBuilder(lexer.text(first));
       while (lexer.match(Token.DOT)) {
-        memberName();
+        name.append('.').append(lexer.text(memberName()));
       }
-      lexer.require(Token.LEFT_PAREN);
-      if (kind() != Token.RIGHT_PAREN) {
-        do {
-          lexer.require(Token.IDENTIFIER);
-          boolean rest = lexer.match(Token.ELLIPSIS);
-          if (lexer.match(Token.COLON)) {
-            typeAnnotation();
-          }
-          if (rest && kind() == Token.COMMA) {
-            throw lexer.error("Rest parameter must be last");
-          }
-          if (rest) {
-            break;
-          }
-        } while (lexer.match(Token.COMMA));
-      }
-      lexer.require(Token.RIGHT_PAREN);
-      if (lexer.match(Token.ARROW)) {
+      if (function) {
+        lexer.require(Token.LEFT_PAREN);
+        if (kind() != Token.RIGHT_PAREN) {
+          do {
+            lexer.require(Token.IDENTIFIER);
+            boolean rest = lexer.match(Token.ELLIPSIS);
+            if (lexer.match(Token.COLON)) {
+              typeAnnotation();
+            }
+            if (rest && kind() == Token.COMMA) {
+              throw lexer.error("Rest parameter must be last");
+            }
+            if (rest) {
+              break;
+            }
+          } while (lexer.match(Token.COMMA));
+        }
+        lexer.require(Token.RIGHT_PAREN);
+        if (lexer.match(Token.ARROW)) {
+          typeAnnotation();
+        }
+      } else if (lexer.match(Token.COLON)) {
         typeAnnotation();
       }
+      String text = name.toString();
+      Symbol symbol = librarySymbol(text);
+      if (symbol == null) {
+        throw lexer.error("Missing native " + (function ? "function '" : "value '") + text + "'");
+      }
+      boolean callable = symbol.definition() instanceof LE_ExtObject || symbol.definition() instanceof LE_Function;
+      if (function != callable) {
+        throw lexer.error("Native '" + text + "' is " + (callable ? "a function" : "a value"));
+      }
+      if (nativeSymbols.putIfAbsent(text, symbol) != null) {
+        throw lexer.error("Duplicate native declaration '" + text + "'");
+      }
+    }
+
+    /** Qualified native names denote compile-time namespaces, not runtime tables. */
+    private @Nullable Symbol nativeSymbol(String name) {
+      Symbol resolved = nativeSymbols.get(name);
+      if (kind() != Token.DOT) {
+        return resolved;
+      }
+      Lexer probe = new Lexer(lexer);
+      int consumed = 0, matched = 0;
+      while (probe.match(Token.DOT)) {
+        Token part = probe.current().kind();
+        if (part != Token.IDENTIFIER && part != Token.PRINT && part != Token.ENV) {
+          break;
+        }
+        name += "." + probe.text(probe.advance());
+        consumed += 2;
+        Symbol candidate = nativeSymbols.get(name);
+        if (candidate != null) {
+          resolved = candidate;
+          matched = consumed;
+        }
+      }
+      for (int i = 0; i < matched; i++) {
+        lexer.advance();
+      }
+      return resolved;
     }
 
     private void printStatement() {
@@ -775,7 +827,8 @@ public final class Compiler {
 
     private void typeAtom() {
       Token type = kind();
-      if (!lexer.match(Token.IDENTIFIER) && !lexer.match(Token.NULL) && !lexer.match(Token.FUNCTION)) {
+      if (!lexer.match(Token.IDENTIFIER) && !lexer.match(Token.NULL)
+          && !lexer.match(Token.VOID) && !lexer.match(Token.FUNCTION)) {
         throw lexer.error("Expected a type name");
       }
       if (type == Token.IDENTIFIER) {
@@ -861,7 +914,7 @@ public final class Compiler {
       } else {
         List<Expr> defaults = new ArrayList<>();
         for (int i = 0; i < names.size(); i++) {
-          defaults.add(literal(Type.NULL, 0));
+          defaults.add(literal(Type.VOID, 0));
         }
         initial = names.size() == 1 ? defaults.get(0) : pack(defaults);
       }
@@ -977,7 +1030,7 @@ public final class Compiler {
         int at = child.local(1);
         Binding selfBinding = new Binding(at, -1, 1, false);
         child.scope.names.put(self, selfBinding);
-        child.code.r(Op.CX_SELF, at, 0, 0);
+        child.code.r(Op.SELF, at, 0, 0);
       }
       lexer.require(Token.LEFT_PAREN);
       List<String> parameterNames = new ArrayList<>();
@@ -1011,7 +1064,7 @@ public final class Compiler {
           }
           if (defaulted) {
             int done = child.code.label();
-            child.code.branch(Op.CX_BR_PRESENT, at, done);
+            child.code.branch(Op.BR_PRESENT, at, done);
             child.next = child.locals;
             Expr value = child.scalar(child.expression());
             child.code.r(Op.MOVE, at, value.register(), 0);
@@ -1030,7 +1083,7 @@ public final class Compiler {
       child.code.parameters(new Parameters(parameterNames, optional, variadic));
       child.next = child.locals;
       child.bracedBlock();
-      child.code.r(Op.CX_RETURN, 0, 0, 0);
+      child.code.r(Op.RETURN0, 0, 0, 0);
       Prototype image = child.code.build(child.highWater, child.parameters);
       lastFunction = image;
       int result = temporary();
@@ -1041,7 +1094,7 @@ public final class Compiler {
           values.add(read(capture.source()));
         }
         Expr captures = pack(values);
-        code.rx(Op.CX_CLOSURE, result, result, captures.register(), image.captureCount());
+        code.rx(Op.CLOSURE, result, result, captures.register(), image.captureCount());
       }
       return new Expr(result, Type.FUNCTION);
     }
@@ -1054,7 +1107,7 @@ public final class Compiler {
         int otherwise = code.label();
         Expr condition = scalar(expression());
         booleanType(condition);
-        code.branch(Op.CX_BR_FALSE, condition.register(), otherwise);
+        code.branch(Op.BR_FALSE, condition.register(), otherwise);
         Body body = controlledBody();
         terminated = body.terminated();
         code.jump(done);
@@ -1081,7 +1134,7 @@ public final class Compiler {
       code.bind(start);
       Expr condition = scalar(expression());
       booleanType(condition);
-      code.branch(Op.CX_BR_FALSE, condition.register(), exit);
+      code.branch(Op.BR_FALSE, condition.register(), exit);
       @Nullable Loop previous = loop;
       loop = new Loop(exit, start, previous);
       boolean terminated = controlledBody().terminated();
@@ -1113,7 +1166,7 @@ public final class Compiler {
       code.bind(start);
       Expr condition = scalar(expression());
       booleanType(condition);
-      code.branch(Op.CX_BR_FALSE, condition.register(), exit);
+      code.branch(Op.BR_FALSE, condition.register(), exit);
       lexer.require(Token.COMMA);
       int entryJump = code.position();
       code.jump(body);
@@ -1139,22 +1192,17 @@ public final class Compiler {
 
     private boolean iterate(boolean parens) {
       List<Token.Span> names = names();
-      if (names.size() > 3) {
-        throw lexer.error("Iteration supports at most three bindings");
+      if (names.size() > MAX_RESULTS) {
+        throw lexer.error("Iteration supports at most sixteen bindings");
       }
       lexer.require(Token.IN);
-      Expr source = value(expression());
-      int container = local(source.width());
-      for (int i = 0; i < source.width(); i++) {
-        code.r(Op.MOVE, container + i, source.register() + i, 0);
-      }
-      int cursor = local(1), out = local(4), check = local(1), minus = local(1);
-      code.constant(cursor, code.constant(Type.LONG, 0));
-      code.constant(minus, code.constant(Type.LONG, -1));
+      Expr source = scalar(value(expression()));
+      int iterator = local(1);
+      code.r(Op.MOVE, iterator, source.register(), 0);
+      int out = local(names.size());
       List<Binding> bindings = new ArrayList<>();
       for (Token.Span name : names) {
-        int at = local(1);
-        Binding binding = new Binding(at, -1, 1, false);
+        Binding binding = new Binding(local(1), -1, 1, false);
         scope.names.put(lexer.text(name), binding);
         bindings.add(binding);
       }
@@ -1163,14 +1211,12 @@ public final class Compiler {
       }
       int start = code.label(), exit = code.label();
       code.bind(start);
-      code.r(Op.CX_NEXT, out, container, cursor);
-      code.rx(Op.ICMP, check, out + 3, minus, Instr.control(Type.LONG, Instr.Relation.EQ));
-      code.branch(Op.CX_BR_TRUE, check, exit);
-      code.r(Op.MOVE, cursor, out + 3, 0);
+      code.rx(Op.CALL, out, iterator, 0, Instr.callWindow(0, names.size()));
+      code.branch(Op.BR_VOID, out, exit);
       for (int i = 0; i < bindings.size(); i++) {
-        code.r(Op.MOVE, bindings.get(i).base(), out + (bindings.size() == 1 ? 2 : bindings.size() == 2 ? i + 1 : i), 0);
+        code.r(Op.MOVE, bindings.get(i).base(), out + i, 0);
       }
-      @Nullable Loop previous = loop;
+      Loop previous = loop;
       loop = new Loop(exit, start, previous);
       boolean terminated = controlledBody().terminated();
       loop = previous;
@@ -1188,10 +1234,10 @@ public final class Compiler {
       for (int i = 0; i < parts.size(); i++) {
         Expr part = parts.get(i);
         if (kinds.get(i) == CallSite.ArgumentKind.LIST_SPREAD || part.available() == -1) {
-          code.r(Op.CX_APPEND_DEREF, list.register(), part.register(), 0);
+          code.r(Op.APPEND_UNPACK, list.register(), part.register(), 0);
         } else {
           part = scalar(part);
-          code.r(Op.CX_LIST_APPEND, list.register(), part.register(), 0);
+          code.r(Op.APPEND, list.register(), part.register(), 0);
         }
       }
       return list;
@@ -1200,7 +1246,7 @@ public final class Compiler {
     private void returns() {
       lexer.require(Token.RETURN);
       if (kind() == Token.RIGHT_BRACE || kind() == Token.EOF || kind() == Token.SEP) {
-        code.r(Op.CX_RETURN, 0, 0, 0);
+        code.r(Op.RETURN0, 0, 0, 0);
         return;
       }
       List<Expr> parts = new ArrayList<>();
@@ -1210,14 +1256,15 @@ public final class Compiler {
       boolean spread = parts.stream().anyMatch(part -> part.available() == -1);
       if (spread) {
         Expr source = parts.size() == 1 ? parts.get(0) : dynamicArguments(parts);
-        code.r(Op.CX_RETURN_DEREF, source.register(), parts.size() == 1 ? 0 : 1, 0);
+        code.r(Op.RETURN_UNPACK, source.register(), 0, 0);
         return;
       }
       Expr result = parts.size() == 1 ? parts.get(0) : pack(parts);
       if (result.width() > MAX_RESULTS) {
-        throw lexer.error("At most four return values are supported");
+        throw lexer.error("At most sixteen return values are supported");
       }
-      code.r(Op.CX_RETURN, result.register(), result.width(), 0);
+      code.r(result.width() == 1 ? Op.RETURN1 : Op.RETURN,
+          result.register(), result.width(), 0);
     }
 
     private void simple() {
@@ -1260,11 +1307,12 @@ public final class Compiler {
         old = scalar(old);
         booleanType(old);
         int done = code.label();
-        code.branch(operator == Token.AND_AND_EQUAL ? Op.CX_BR_FALSE : Op.CX_BR_TRUE, old.register(), done);
+        code.branch(operator == Token.AND_AND_EQUAL ? Op.BR_FALSE : Op.BR_TRUE, old.register(), done);
         Expr right = scalar(expression());
         booleanType(right);
         if (right.type() == Type.INVALID) {
-          code.immediate(Op.CX_GUARD, right.register(), 0, Type.BOOL.ordinal());
+          int checked = code.label();
+          code.branch(Op.BR_TRUE, right.register(), checked).bind(checked);
         }
         write(destination, right);
         code.bind(done);
@@ -1299,13 +1347,14 @@ public final class Compiler {
       booleanType(left);
       int result = temporary(), done = code.label();
       code.r(Op.MOVE, result, left.register(), 0);
-      code.branch(token == Token.AND_AND ? Op.CX_BR_FALSE : Op.CX_BR_TRUE, left.register(), done);
+      code.branch(token == Token.AND_AND ? Op.BR_FALSE : Op.BR_TRUE, left.register(), done);
       Expr right = scalar(expression(precedence));
       booleanType(right);
-      if (right.type() == Type.INVALID) {
-        code.immediate(Op.CX_GUARD, right.register(), 0, Type.BOOL.ordinal());
-      }
       code.r(Op.MOVE, result, right.register(), 0);
+      // Even the final operand must be BOOL when its type is only known at runtime.
+      if (right.type() == Type.INVALID) {
+        code.branch(Op.BR_TRUE, result, done);
+      }
       code.bind(done);
       return new Expr(result, Type.BOOL);
     }
@@ -1316,18 +1365,18 @@ public final class Compiler {
       Binding binding = target.binding();
       if (binding != null) {
         if (binding.capture() >= 0) {
-          code.immediate(Op.CX_CAPTURE_PTR, at, 0, binding.capture());
+          code.r(Op.UPVALREF, at, binding.capture(), 0);
         } else {
-          code.r(Op.CX_LOCAL_PTR, at, binding.base(), 0);
+          code.r(Op.LOCALREF, at, binding.base(), 0);
         }
       } else if (target.container() == -3) {
         code.r(Op.MOVE, at, target.key(), 0);
       } else if (target.container() == -4) {
-        code.upper(Op.CX_CONST_PTR, at, target.key());
+        code.upper(Op.CONSTREF, at, target.key());
       } else if (target.container() == -2) {
-        code.r(Op.CX_GLOBAL_PTR, at, target.key(), 0);
+        code.r(Op.GLOBALREF, at, target.key(), 0);
       } else {
-        code.r(Op.CX_INDEX_PTR, at, target.container(), target.key());
+        code.r(Op.INDEXREF, at, target.container(), target.key());
       }
       return new Expr(at, Type.PTR);
     }
@@ -1371,6 +1420,10 @@ public final class Compiler {
           lexer.advance();
           return literal(Type.BOOL, 0);
         }
+        case VOID -> {
+          lexer.advance();
+          return literal(Type.VOID, 0);
+        }
         case NULL -> {
           lexer.advance();
           return literal(Type.NULL, 0);
@@ -1378,7 +1431,7 @@ public final class Compiler {
         case ENV -> {
           lexer.advance();
           int at = temporary();
-          code.r(Op.CX_ENV, at, 0, 0);
+          code.r(Op.GETENV, at, 0, 0);
           return new Expr(at, Type.TABLE);
         }
         case STRING -> {
@@ -1425,14 +1478,17 @@ public final class Compiler {
           if (binding != null) {
             return variable(binding);
           }
-          @Nullable Symbol symbol = library.resolve(text);
+          @Nullable Symbol symbol = nativeSymbol(text);
+          if (symbol == null) {
+            symbol = library.resolve(text);
+          }
           if (text.equals("len") && kind() == Token.LEFT_PAREN
               && (symbol == null || symbol.definition() == BF_LIB.definition())) {
             lexer.require(Token.LEFT_PAREN);
             Expr argument = scalar(value(expression()));
             lexer.require(Token.RIGHT_PAREN);
             int result = temporary();
-            code.r(Op.CX_LEN, result, argument.register(), 0);
+            code.r(Op.LEN, result, argument.register(), 0);
             return new Expr(result, Type.INT);
           }
           if (symbol == null && kind() == Token.LEFT_PAREN) {
@@ -1485,7 +1541,7 @@ public final class Compiler {
       }
       lexer.require(Token.RIGHT_PAREN);
       int result = temporary();
-      code.r(Op.CX_TO_STRING, result, argument.register(), 0);
+      code.r(Op.TOSTRING, result, argument.register(), 0);
       return new Expr(result, Type.STRING);
     }
 
@@ -1506,7 +1562,7 @@ public final class Compiler {
           Token.Span field = memberName();
           Expr key = string(lexer.text(field));
           int method = temporary();
-          code.r(Op.CX_GET_INDEX, method, base.register(), key.register());
+          code.r(Op.GETTABLE, method, base.register(), key.register());
           base = call(new Expr(method, Type.INVALID), base, false);
         } else if (kind() == Token.LEFT_PAREN) {
           base = call(scalar(base), null, false);
@@ -1522,18 +1578,15 @@ public final class Compiler {
       Target destination = target(operand);
       Expr old = scalar(operand);
       int result = temporary();
-      code.r(token == Token.INCREMENT ? Op.CX_INCR : Op.CX_DECR, result, old.register(), 0);
+      code.r(token == Token.INCREMENT ? Op.INC : Op.DEC, result, old.register(), 0);
       Expr updated = new Expr(result, old.type());
       write(destination, updated);
       return postfix ? new Expr(old.register(), old.type()) : updated;
     }
 
     private Expr container(Type type) {
-      Expr size = literal(Type.INT, 0), layout = literal(Type.INT, type == Type.LIST ? ElxHeap.Layout.LIST.ordinal() : ElxHeap.Layout.TABLE.ordinal());
       int out = temporary();
-      code.r(Op.CX_ALLOC, out, size.register(), layout.register());
-      Expr tag = literal(Type.UBYTE, Byte.toUnsignedInt(type.tag()));
-      code.r(Op.CX_PACK, out, tag.register(), out);
+      code.r(type == Type.LIST ? Op.NEWLIST : Op.NEWTABLE, out, 0, 0);
       return new Expr(out, type);
     }
 
@@ -1541,13 +1594,21 @@ public final class Compiler {
       lexer.require(Token.LEFT_BRACKET);
       Expr list = container(Type.LIST);
       int mark = next;
+      while (lexer.match(Token.SEP)) {
+      }
       while (kind() != Token.RIGHT_BRACKET) {
         Expr item = scalar(expression());
-        code.r(Op.CX_LIST_APPEND, list.register(), item.register(), 0);
+        code.r(Op.APPEND, list.register(), item.register(), 0);
         next = mark;
+        while (lexer.match(Token.SEP)) {
+        }
         if (!lexer.match(Token.COMMA)) {
           break;
         }
+        while (lexer.match(Token.SEP)) {
+        }
+      }
+      while (lexer.match(Token.SEP)) {
       }
       lexer.require(Token.RIGHT_BRACKET);
       return list;
@@ -1573,7 +1634,7 @@ public final class Compiler {
         }
         lexer.require(Token.EQUAL);
         Expr item = scalar(expression());
-        code.r(Op.CX_SET_TABLE, table.register(), key.register(), item.register());
+        code.r(Op.SETTABLE, table.register(), key.register(), item.register());
         next = mark;
         if (!lexer.match(Token.COMMA)) {
           break;
@@ -1682,24 +1743,20 @@ public final class Compiler {
         Expr args = pack(parts);
         int out = reserve(MAX_RESULTS);
         int site = code.callSite(new CallSite(arguments.names(), arguments.kinds()));
-        code.rx(Op.CX_CALL_NAMED, out, function.register(), args.register(), site);
+        code.rx(Op.CALL_NAMED, out, function.register(), args.register(), site);
         return new Expr(out, Type.INVALID, 1, false, null, MAX_RESULTS);
       }
       boolean dynamic = arguments.kinds().stream().anyMatch(kind -> kind == CallSite.ArgumentKind.LIST_SPREAD) || parts.stream().anyMatch(part -> part.available() == -1);
       if (dynamic) {
         Expr args = dynamicArguments(parts, arguments.kinds());
         int out = reserve(MAX_RESULTS);
-        code.rx(Op.CX_CALL_PACKED, out, function.register(), args.register(), MAX_RESULTS | (parts.size() == 1 ? 0 : 256));
+        code.rx(Op.CALL_PACKED, out, function.register(), args.register(), MAX_RESULTS | (parts.size() == 1 ? 0 : 256));
         return new Expr(out, Type.INVALID, 1, false, null, MAX_RESULTS);
       }
       Expr args = pack(parts);
       int out = reserve(MAX_RESULTS);
-      if (external) {
-        Expr member = literal(Type.NULL, 0);
-        code.rx(Op.CX_EX_CALL, out, function.register(), member.register(), Instr.externalWindow(args.register(), args.width(), MAX_RESULTS));
-      } else {
-        code.rx(Op.CX_CALL, out, function.register(), args.register(), Instr.callWindow(args.width(), MAX_RESULTS));
-      }
+      code.rx(Op.CALL, out, function.register(), args.register(),
+          Instr.callWindow(args.width(), MAX_RESULTS));
       return new Expr(out, Type.INVALID, 1, false, null, MAX_RESULTS);
     }
 
@@ -1711,11 +1768,11 @@ public final class Compiler {
         if (type != Type.TABLE) {
           booleanType(value);
         }
-        code.r(Op.CX_BOOL_NOT, out, value.register(), 0);
+        code.r(Op.NOT, out, value.register(), 0);
         return new Expr(out, Type.BOOL);
       }
       if (token == Token.PLUS) {
-        code.r(Op.CX_POS, out, value.register(), 0);
+        code.r(Op.POS, out, value.register(), 0);
         return new Expr(out, type);
       }
       if (type != Type.INVALID && type != Type.TABLE && !type.numeric()) {
@@ -1724,12 +1781,8 @@ public final class Compiler {
       if (token == Token.TILDE && type.numeric() && !type.integer()) {
         throw lexer.error("Bitwise complement requires an integer");
       }
-      Op op = token == Token.TILDE ? Op.BNOT : type.numeric() && !type.integer() ? Op.FNEG : Op.INEG;
-      if (type.numeric()) {
-        code.rx(op, out, value.register(), 0, Instr.control(type));
-      } else {
-        code.rx(Op.CX_OPERATOR, out, value.register(), value.register(), op.ordinal());
-      }
+      Op op = token == Token.TILDE ? Op.BNOT : Op.NEG;
+      code.r(op, out, value.register(), 0);
       return new Expr(out, type);
     }
 
@@ -1739,11 +1792,11 @@ public final class Compiler {
         return value;
       }
       Type source = value.type();
-      if (source != Type.INVALID && !source.numeric() && !(target == Type.BOOL && source == Type.TABLE)) {
+      if (source != Type.INVALID && source != Type.VOID && !source.numeric() && !(target == Type.BOOL && source == Type.TABLE)) {
         throw lexer.error("Invalid numeric conversion");
       }
       int out = temporary();
-      code.immediate(Op.CX_CONVERT, out, value.register(), target.ordinal());
+      code.r(Op.CONVERT, out, value.register(), target.ordinal());
       return new Expr(out, target);
     }
 
@@ -1758,56 +1811,23 @@ public final class Compiler {
       right = scalar(right);
       int out = temporary();
       Type a = left.type(), b = right.type();
-      if (token == Token.EQUAL_EQUAL) {
-        code.r(Op.CX_EQUAL, out, left.register(), right.register());
+      boolean comparison = token == Token.EQUAL_EQUAL || token == Token.BANG_EQUAL
+          || token == Token.LESS || token == Token.LESS_EQUAL
+          || token == Token.GREATER || token == Token.GREATER_EQUAL;
+      if (comparison) {
+        code.rx(Op.COMPARE, out, left.register(), right.register(), Instr.control(relation(token)));
         return new Expr(out, Type.BOOL);
       }
-      if (token == Token.BANG_EQUAL) {
-        code.rx(Op.CX_CMP, out, left.register(), right.register(), Instr.control(Type.INVALID, Instr.Relation.NE));
-        return new Expr(out, Type.BOOL);
+      Op op = arithmetic(token);
+      if (a.numeric() && b.numeric() && (!a.integer() || !b.integer())
+          && (op == Op.BAND || op == Op.BOR || op == Op.BXOR
+          || op == Op.SHL || op == Op.SHR || op == Op.USHR)) {
+        throw lexer.error("Bitwise operator requires integers");
       }
-      boolean compare = token == Token.LESS || token == Token.LESS_EQUAL || token == Token.GREATER || token == Token.GREATER_EQUAL;
-      Op op = compare ? Op.ICMP : arithmetic(token);
-      Type type = Type.INVALID;
-      if (a.numeric() && b.numeric()) {
-        type = Type.binary(a, b);
-        left = convert(left, type);
-        right = convert(right, type);
-        if (compare) {
-          code.rx(type.integer() ? (type.unsigned() ? Op.UCMP : Op.ICMP) : Op.FCMP, out, left.register(), right.register(), Instr.control(type, relation(token)));
-        } else {
-          if (!type.integer()) {
-            op = switch (op) {
-              case IADD -> Op.FADD;
-              case ISUB -> Op.FSUB;
-              case IMUL -> Op.FMUL;
-              case IDIV -> Op.FDIV;
-              case IREM -> Op.FREM;
-              default -> throw lexer.error("Bitwise operator requires integers");
-            };
-          } else if (type.unsigned()) {
-            if (op == Op.IDIV) {
-              op = Op.UDIV;
-            } else if (op == Op.IREM) {
-              op = Op.UREM;
-            }
-          }
-          code.rx(op, out, left.register(), right.register(), Instr.control(type));
-        }
-      } else {
-        if (a != Type.INVALID && b != Type.INVALID && !(token == Token.PLUS && (a == Type.STRING || b == Type.STRING)) && !(a == b && (a == Type.TABLE || a == Type.LIST || a == Type.STRING)) && !(a == Type.LIST && b.integer() && token == Token.STAR)) {
-          throw lexer.error("Invalid operand types: " + a + " / " + b);
-        }
-        if (compare) {
-          code.rx(Op.CX_CMP, out, left.register(), right.register(), Instr.control(Type.INVALID, relation(token)));
-        } else {
-          code.r(integratedArithmetic(op), out, left.register(), right.register());
-        }
-        if (a == b && (a == Type.STRING || a == Type.LIST || a == Type.TABLE)) {
-          type = a;
-        }
-      }
-      return new Expr(out, compare ? Type.BOOL : type);
+      code.r(op, out, left.register(), right.register());
+      Type type = a.numeric() && b.numeric() ? Type.binary(a, b)
+          : a == b && (a == Type.STRING || a == Type.TABLE || a == Type.LIST) ? a : Type.INVALID;
+      return new Expr(out, type);
     }
 
     private record Body(boolean braced, boolean terminated) {

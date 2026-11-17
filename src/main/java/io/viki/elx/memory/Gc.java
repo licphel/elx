@@ -49,7 +49,7 @@ public final class Gc implements HeapVisitor {
    *
    * @param internal internal ELX heap
    * @param external external-handle heap
-   * @param regs register windows that form VM roots
+   * @param regs     register windows that form VM roots
    * @throws IllegalArgumentException if the heaps and registers do not share
    *                                  the same memory and arena
    */
@@ -74,13 +74,13 @@ public final class Gc implements HeapVisitor {
   }
 
   /**
-     * Runs a coordinated collection and lets the caller enumerate additional
-     * roots while the mark phase is active.
-     *
-   * @param pressure whether weak pins may be reclaimed
+   * Runs a coordinated collection and lets the caller enumerate additional
+   * roots while the mark phase is active.
+   *
+   * @param pressure   whether weak pins may be reclaimed
    * @param extraRoots callback that visits temporary host roots
    * @throws IllegalStateException if a collection is already running
-   * @throws NullPointerException if {@code extraRoots} is null
+   * @throws NullPointerException  if {@code extraRoots} is null
    */
   public void collect(boolean pressure, Consumer<HeapVisitor> extraRoots) {
     if (running) {
@@ -118,7 +118,7 @@ public final class Gc implements HeapVisitor {
    * is scanned once. The pending array grows geometrically and traversal uses
    * {@code O(R)} storage for {@code R} pending references.</p>
    *
-   * @param type slot type describing the referenced domain
+   * @param type    slot type describing the referenced domain
    * @param pointer reference value from that slot
    * @throws IllegalStateException if called outside an active collection
    */

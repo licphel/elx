@@ -1,517 +1,126 @@
-/*
- * MIT License
- *
- * Copyright (c) 2026 Licphel
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-
 package io.viki.elx.value;
 
 import io.viki.elx.Type;
 import io.viki.elx.asm.Instr;
 import io.viki.elx.asm.Op;
-import io.viki.elx.lib.ValueText;
-import io.viki.elx.memory.ElxHeap;
-import io.viki.elx.memory.Memory;
-import io.viki.elx.memory.Slot;
-
-import java.util.Arrays;
+import io.viki.elx.lib.Span;
 
 /**
- * Scalar operators, value dispatch, structural equality, and hashing. Operations
- * read/write the supplied slot storage directly, never invoke script hooks, and
- * keep cycle-detection state in a thread-local primitive stack. Callers must
- * obey the thread confinement of the supplied heap and memory.
+ * VM-owned language semantics shared by bytecode and host libraries.
+ * Operations honor numeric promotion and metamethods, may run script code and
+ * collect garbage, and complete synchronously for host callers. All spans
+ * must belong to the same VM. Results may alias operands: implementations read
+ * operands before overwriting a destination. Instances are thread-confined.
+ *
+ * <p>Numeric built-ins run first. Otherwise hooks are selected left then right
+ * with original operand order, followed by built-in container/string fallback.
+ * Comparisons follow script relations, including NaN; there is no implicit
+ * Type-ordinal ordering. Raw table key equality/hash never dispatch hooks.
  */
-public final class ValueOperations {
-  private static final long HASH_SEED = 0xcbf29ce484222325L, HASH_PRIME = 0x100000001b3L;
-  // Pure structural comparison never invokes script hooks. Only primitive addresses survive between calls.
-  private static final ThreadLocal<long[]> COMPARISONS = ThreadLocal.withInitial(() -> new long[33]);
-
-  private ValueOperations() {
-  }
-
-  private static long mix(long value) {
-    value = (value ^ (value >>> 30)) * 0xbf58476d1ce4e5b9L;
-    value = (value ^ (value >>> 27)) * 0x94d049bb133111ebL;
-    return value ^ (value >>> 31);
-  }
-
-  private static boolean numericEqual(Type left, long x, Type right, long y) {
-    if (left.integer() && right.integer()) {
-      x = Type.normalize(x, left);
-      y = Type.normalize(y, right);
-      if (left == Type.ULONG && x < 0) {
-        return right == Type.ULONG && x == y;
-      }
-      if (right == Type.ULONG && y < 0) {
-        return false;
-      }
-      return x == y;
-    }
-    if (!left.integer() && !right.integer()) {
-      return Type.asDouble(x, left) == Type.asDouble(y, right);
-    }
-    Type integer = left.integer() ? left : right;
-    long bits = left.integer() ? x : y;
-    double number = left.integer() ? Type.asDouble(y, right) : Type.asDouble(x, left);
-    if (!Double.isFinite(number)) {
-      return false;
-    }
-    if (integer == Type.ULONG) {
-      if (number < 0 || number >= 0x1p64) {
-        return false;
-      }
-    } else if (number < -0x1p63 || number >= 0x1p63) {
-      return false;
-    }
-    return Type.asDouble(bits, integer) == number && Type.cast(Double.doubleToRawLongBits(number), Type.DOUBLE, integer) == Type.normalize(bits, integer);
-  }
-
-  private static boolean relation(int comparison, Instr.Relation relation) {
-    return switch (relation) {
-      case EQ -> comparison == 0;
-      case NE -> comparison != 0;
-      case LT -> comparison < 0;
-      case LE -> comparison <= 0;
-      case GT -> comparison > 0;
-      case GE -> comparison >= 0;
-    };
-  }
+public interface ValueOperations {
+  /**
+   * Applies one unary language operation to a value slot.
+   *
+   * @param operation        unary {@link Op}, such as {@link Op#NEG} or {@link Op#NOT}
+   * @param source           borrowed source span
+   * @param index            source slot index
+   * @param destination      borrowed destination span
+   * @param destinationIndex destination slot index
+   * @throws IllegalArgumentException if the operation is not unary or the value is invalid
+   */
+  void unary(Op operation, Span source, int index, Span destination, int destinationIndex);
 
   /**
-   * Returns a deterministic hash for the value stored in one slot.
+   * Applies one binary language operation to two value slots.
    *
-   * <p>Numeric values use a common representation so equal integer and floating
-   * values hash alike; lists and tables use identity-style hashes because their
-   * contents are mutable.</p>
-   *
-   * @param memory memory containing the value slot
-   * @param value source slot address
-   * @return deterministic hash used by table probing
+   * @param operation        binary {@link Op}, such as {@link Op#ADD} or {@link Op#MUL}
+   * @param left             left operand span
+   * @param leftIndex        left operand slot index
+   * @param right            right operand span
+   * @param rightIndex       right operand slot index
+   * @param destination      destination span
+   * @param destinationIndex destination slot index
+   * @throws IllegalArgumentException if the operation is not binary or the values are invalid
    */
-  public static long hash(Memory memory, long value) {
-    return ValueOperations.hash(memory, Slot.type(memory, value), Slot.bits(memory, value));
-  }
-
-  private static long hash(Memory memory, Type type, long bits) {
-    if (type == Type.NULL) {
-      return ValueOperations.mix(Type.NULL.ordinal());
-    }
-    if (type.numeric()) {
-      double number = Type.asDouble(bits, type);
-      return ValueOperations.mix(number == 0 ? 0 : Double.doubleToLongBits(number));
-    }
-    if (type == Type.STRING) {
-      int length = memory.load32(bits);
-      long hash = HASH_SEED;
-      for (int i = 0; i < length; i++) {
-        hash = (hash ^ Byte.toUnsignedInt(memory.load8(bits + Integer.BYTES + i))) * HASH_PRIME;
-      }
-      return hash;
-    }
-    if (type == Type.LIST || type == Type.TABLE) {
-      return ValueOperations.mix(type.ordinal());
-    }
-    return ValueOperations.mix(bits ^ ((long) type.ordinal() << 56));
-  }
+  void binary(Op operation, Span left, int leftIndex, Span right, int rightIndex, Span destination, int destinationIndex);
 
   /**
-   * Adds an integer delta to a numeric value and writes the result slot.
+   * Tests two values using the same relation semantics as bytecode comparison.
    *
-   * @param memory memory containing source and destination slots
-   * @param result destination slot
-   * @param source source numeric slot
-   * @param delta signed increment or decrement
-   * @throws IllegalArgumentException if the source is not numeric
+   * @param relation   comparison relation
+   * @param left       left operand span
+   * @param leftIndex  left operand slot index
+   * @param right      right operand span
+   * @param rightIndex right operand slot index
+   * @return whether the relation holds
    */
-  public static void increment(Memory memory, long result, long source, int delta) {
-    Type type = Slot.type(memory, source);
-    long bits = Slot.bits(memory, source);
-    if (type.integer()) {
-      Slot.write(memory, result, type, Type.normalize(bits + delta, type));
-    } else if (type == Type.FLOAT) {
-      Slot.write(memory, result, type, Integer.toUnsignedLong(Float.floatToRawIntBits(Float.intBitsToFloat((int) bits) + delta)));
-    } else if (type == Type.DOUBLE) {
-      Slot.write(memory, result, type, Double.doubleToRawLongBits(Double.longBitsToDouble(bits) + delta));
-    } else {
-      throw new IllegalArgumentException("Increment/decrement requires a number, got " + type);
-    }
-  }
+  boolean test(Instr.Relation relation, Span left, int leftIndex, Span right, int rightIndex);
 
   /**
-   * Converts an integer slot into an addressable Java index.
+   * Reads an indexed value through language GET semantics.
    *
-   * @param memory memory containing the key slot
-   * @param key integer key slot
-   * @return nonnegative Java index
-   * @throws IllegalArgumentException if the key is not integral
-   * @throws IndexOutOfBoundsException if the value cannot fit a Java index
+   * @param target           indexed list, table, or host value
+   * @param targetIndex      target slot index
+   * @param key              key or list-index span
+   * @param keyIndex         key slot index
+   * @param destination      destination span
+   * @param destinationIndex destination slot index
    */
-  public static int index(Memory memory, long key) {
-    Type type = Slot.type(memory, key);
-    if (!type.integer()) {
-      throw new IllegalArgumentException("Index requires an integer, got " + type);
-    }
-    long value = Slot.bits(memory, key);
-    if (type == Type.ULONG && value < 0) {
-      throw new IndexOutOfBoundsException("Unsigned index exceeds addressable memory");
-    }
-    return Math.toIntExact(Type.normalize(value, type));
-  }
+  void get(Span target, int targetIndex, Span key, int keyIndex, Span destination, int destinationIndex);
 
   /**
-   * Writes a table entry or list element selected by an index key.
+   * Writes an indexed value through language SET semantics.
    *
-   * @param heap owning ELX heap
-   * @param target list or table value slot
-   * @param key index/key slot
-   * @param value source value slot
-   * @throws IllegalArgumentException if the target is not indexable
-   * @throws IndexOutOfBoundsException if a list index is invalid
-   * @throws IllegalStateException if the heap or target is dead
+   * @param target      indexed list, table, or host value
+   * @param targetIndex target slot index
+   * @param key         key or list-index span
+   * @param keyIndex    key slot index
+   * @param value       source value span
+   * @param valueIndex  source slot index
    */
-  public static void setIndex(ElxHeap heap, long target, long key, long value) {
-    Memory memory = heap.memory();
-    Type type = Slot.type(memory, target);
-    long pointer = Slot.bits(memory, target);
-    if (type == Type.TABLE) {
-      ElxTable.set(heap, pointer, key, value);
-    } else if (type == Type.LIST) {
-      ElxList.set(heap, pointer, ValueOperations.index(memory, key), value);
-    } else {
-      throw new IllegalArgumentException("Not assignable by index: " + type);
-    }
-  }
+  void set(Span target, int targetIndex, Span key, int keyIndex, Span value, int valueIndex);
 
   /**
-   * Executes one encoded scalar, string, or container operator over slot values.
+   * Converts a value using explicit ELX conversion rules.
    *
-   * <p>Operands are read before writes where aliasing could otherwise change a
-   * subsequent operand. Container operations delegate to {@link ElxList} and
-   * {@link ElxTable}; this method does not invoke script metamethods.</p>
-   *
-   * @param heap owning ELX heap
-   * @param control encoded operator/control word
-   * @param result destination slot
-   * @param left left or unary operand slot
-   * @param right right operand slot
-   * @throws IllegalArgumentException if operand types do not support the operator
-   * @throws ArithmeticException if result allocation sizes overflow
-   * @throws IllegalStateException if the heap or referenced container is dead
+   * @param targetType       requested target type
+   * @param source           source span
+   * @param sourceIndex      source slot index
+   * @param destination      destination span
+   * @param destinationIndex destination slot index
    */
-  public static void operator(ElxHeap heap, int control, long result, long left, long right) {
-    Memory memory = heap.memory();
-    Op op = Instr.op(control);
-    Type a = Slot.type(memory, left);
-    long x = Slot.bits(memory, left);
-    if (op == Op.CX_POS) {
-      if (!a.numeric()) {
-        throw new IllegalArgumentException("Unary + requires a number, got " + a);
-      }
-      Slot.copy(memory, result, left, 1);
-      return;
-    }
-    if (op == Op.ICMP && (Instr.relation(control) == Instr.Relation.EQ || Instr.relation(control) == Instr.Relation.NE)) {
-      boolean same = ValueOperations.equal(memory, left, right);
-      Slot.write(memory, result, Type.BOOL, same == (Instr.relation(control) == Instr.Relation.EQ) ? 1 : 0);
-      return;
-    }
-    if (op == Op.CX_EQUAL) {
-      Slot.write(memory, result, Type.BOOL, ValueOperations.equal(memory, left, right) ? 1 : 0);
-      return;
-    }
-    if (op == Op.CX_BOOL_NOT) {
-      if (a != Type.BOOL) {
-        throw new IllegalArgumentException("CX_BOOL_NOT requires BOOL, got " + a);
-      }
-      Slot.write(memory, result, Type.BOOL, x == 0 ? 1 : 0);
-      return;
-    }
-    if (op == Op.INEG || op == Op.FNEG) {
-      if (a.integer()) {
-        Slot.write(memory, result, a, Type.normalize(-x, a));
-      } else if (a == Type.FLOAT) {
-        Slot.write(memory, result, a, x ^ 0x80000000L);
-      } else if (a == Type.DOUBLE) {
-        Slot.write(memory, result, a, x ^ Long.MIN_VALUE);
-      } else {
-        throw new IllegalArgumentException("Negation requires numeric value, got " + a);
-      }
-      return;
-    }
-    if (op == Op.BNOT) {
-      Slot.write(memory, result, a, Type.normalize(~x, a));
-      return;
-    }
-
-    Type b = Slot.type(memory, right);
-    long y = Slot.bits(memory, right);
-    if (op == Op.IADD && (a == Type.STRING || b == Type.STRING) && a != b) {
-      if (a != Type.STRING && !a.numeric() && a != Type.NULL || b != Type.STRING && !b.numeric() && b != Type.NULL) {
-        throw new IllegalArgumentException("Cannot concatenate " + a + " and " + b);
-      }
-      String text = ValueText.string(memory, left) + ValueText.string(memory, right);
-      Slot.write(memory, result, Type.STRING, heap.importString(text));
-      return;
-    }
-    if (a == Type.STRING && b == Type.STRING && op == Op.IADD) {
-      int leftLength = memory.load32(x), rightLength = memory.load32(y);
-      long text = heap.allocate(ElxHeap.Layout.STRING, Math.addExact(leftLength, rightLength));
-      memory.copyBytes(text + Integer.BYTES, x + Integer.BYTES, leftLength);
-      memory.copyBytes(text + Integer.BYTES + leftLength, y + Integer.BYTES, rightLength);
-      Slot.write(memory, result, Type.STRING, text);
-      return;
-    }
-    if (a == Type.STRING && b == Type.STRING && op == Op.ICMP) {
-      Slot.write(memory, result, Type.BOOL, ValueOperations.relation(ValueOperations.compareStrings(memory, x, y), Instr.relation(control)) ? 1 : 0);
-      return;
-    }
-    if (a == Type.LIST && b.integer() && op == Op.IMUL) {
-      ElxList.repeat(heap, result, x, Type.normalize(y, b));
-      return;
-    }
-    if (a == b && (a == Type.LIST || a == Type.TABLE)) {
-      if (op == Op.IADD || op == Op.BOR || op == Op.ISUB || op == Op.BXOR || op == Op.BAND) {
-        if (a == Type.LIST) {
-          ElxList.combine(heap, op, result, x, y);
-        } else {
-          ElxTable.combine(heap, op, result, x, y);
-        }
-        return;
-      }
-    }
-    if (!a.numeric() || !b.numeric()) {
-      throw new IllegalArgumentException("No " + op + " for " + a + " / " + b);
-    }
-    Type kind = Type.binary(a, b);
-    x = Type.cast(x, a, kind);
-    y = Type.cast(y, b, kind);
-    if (op == Op.ICMP) {
-      boolean comparison;
-      if (kind.integer()) {
-        comparison = ValueOperations.relation(kind.unsigned() ? Long.compareUnsigned(x, y) : Long.compare(x, y), Instr.relation(control));
-      } else {
-        double lhs = Type.asDouble(x, kind), rhs = Type.asDouble(y, kind);
-        comparison = switch (Instr.relation(control)) {
-          case EQ -> lhs == rhs;
-          case NE -> lhs != rhs;
-          case LT -> lhs < rhs;
-          case LE -> lhs <= rhs;
-          case GT -> lhs > rhs;
-          case GE -> lhs >= rhs;
-        };
-      }
-      Slot.write(memory, result, Type.BOOL, comparison ? 1 : 0);
-      return;
-    }
-    if (!kind.integer()) {
-
-      if (kind == Type.FLOAT) {
-        float lhs = Float.intBitsToFloat((int) x), rhs = Float.intBitsToFloat((int) y);
-        float value = switch (op) {
-          case IADD, FADD -> lhs + rhs;
-          case ISUB, FSUB -> lhs - rhs;
-          case IMUL, FMUL -> lhs * rhs;
-          case IDIV, FDIV -> lhs / rhs;
-          case IREM, FREM -> lhs % rhs;
-          default -> throw new IllegalArgumentException("Not lhs floating operator: " + op);
-        };
-        Slot.write(memory, result, kind, Integer.toUnsignedLong(Float.floatToRawIntBits(value)));
-      } else {
-        double lhs = Double.longBitsToDouble(x), rhs = Double.longBitsToDouble(y);
-        double value = switch (op) {
-          case IADD, FADD -> lhs + rhs;
-          case ISUB, FSUB -> lhs - rhs;
-          case IMUL, FMUL -> lhs * rhs;
-          case IDIV, FDIV -> lhs / rhs;
-          case IREM, FREM -> lhs % rhs;
-          default -> throw new IllegalArgumentException("Not lhs floating operator: " + op);
-        };
-        Slot.write(memory, result, kind, Double.doubleToRawLongBits(value));
-      }
-
-      return;
-    }
-    long value = switch (op) {
-      case IADD -> x + y;
-      case ISUB -> x - y;
-      case IMUL -> x * y;
-      case IDIV -> kind.unsigned() ? Long.divideUnsigned(x, y) : x / y;
-      case UDIV -> Long.divideUnsigned(x, y);
-      case IREM -> kind.unsigned() ? Long.remainderUnsigned(x, y) : x % y;
-      case UREM -> Long.remainderUnsigned(x, y);
-      case BAND -> x & y;
-      case BOR -> x | y;
-      case BXOR -> x ^ y;
-      case SHL -> x << ((int) y & (kind.width() - 1));
-      case SHR -> x >> ((int) y & (kind.width() - 1));
-      case USHR -> (kind.width() == 64 ? x : x & ((1L << kind.width()) - 1)) >>> ((int) y & (kind.width() - 1));
-      default -> throw new IllegalArgumentException("Not an integer operator: " + op);
-    };
-    Slot.write(memory, result, kind, Type.normalize(value, kind));
-  }
-
-  private static int compareStrings(Memory memory, long left, long right) {
-    int a = memory.load32(left), b = memory.load32(right), length = Math.min(a, b);
-    for (int i = 0; i < length; i++) {
-      int comparison = Integer.compare(Byte.toUnsignedInt(memory.load8(left + Integer.BYTES + i)), Byte.toUnsignedInt(memory.load8(right + Integer.BYTES + i)));
-      if (comparison != 0) {
-        return comparison;
-      }
-    }
-    return Integer.compare(a, b);
-  }
+  void convert(Type targetType, Span source, int sourceIndex, Span destination, int destinationIndex);
 
   /**
-   * Compares two values structurally without invoking metatable hooks.
+   * Calls a function or a value's CALL hook, filling outputs and clearing unused
+   * output slots to void. A normal function receives inputs unchanged, while a
+   * CALL hook receives its object as the first argument.
    *
-   * <p>Lists and tables recurse through their contents with thread-local cycle
-   * tracking. Scalar comparison is constant time except for strings, which is
-   * linear in the compared byte length; container comparison is proportional to
-   * the visited graph.</p>
-   *
-   * @param memory memory containing both slots
-   * @param leftSlot left value slot
-   * @param rightSlot right value slot
-   * @return {@code true} when values are equal under raw ELX semantics
+   * @param callable      span containing the function or callable value
+   * @param callableIndex callable slot index
+   * @param inputs        contiguous input span
+   * @param outputs       destination span with capacity for returned values
+   * @return number of values written, from zero through sixteen
+   * @throws IllegalArgumentException if any span belongs to another VM
    */
-  public static boolean equal(Memory memory, long leftSlot, long rightSlot) {
-    Type left = Slot.type(memory, leftSlot), right = Slot.type(memory, rightSlot);
-    long x = Slot.bits(memory, leftSlot), y = Slot.bits(memory, rightSlot);
-    if (left.numeric() && right.numeric()) {
-      return numericEqual(left, x, right, y);
-    }
-    if (left != right) {
-      return false;
-    }
-    if (left == Type.STRING) {
-      return x == y || compareStrings(memory, x, y) == 0;
-    }
-    if (left != Type.LIST && left != Type.TABLE) {
-      return left == Type.NULL || x == y;
-    }
-    if (x == y) {
-      return true;
-    }
-    return equalContainers(memory, left, x, y);
-  }
-
-  private static boolean equalContainers(Memory memory, Type left, long x, long y) {
-    int count = Slot.getInt(memory, x);
-    if (count != Slot.getInt(memory, y)) {
-      return false;
-    }
-    long[] work = COMPARISONS.get();
-    int pairs = (int) work[0];
-    for (int i = 0; i < pairs; i++) {
-      if (work[1 + 2 * i] == x && work[2 + 2 * i] == y) {
-        return true;
-      }
-    }
-    if (2 * pairs + 2 >= work.length) {
-      work = Arrays.copyOf(work, 2 * work.length - 1);
-      COMPARISONS.set(work);
-    }
-    work[1 + 2 * pairs] = x;
-    work[2 + 2 * pairs] = y;
-    work[0] = pairs + 1;
-    try {
-      if (left == Type.LIST) {
-        long a = ElxList.data(memory, x), b = ElxList.data(memory, y);
-        for (int i = 0; i < count; i++) {
-          if (!equal(memory, Slot.address(a, i), Slot.address(b, i))) {
-            return false;
-          }
-        }
-      } else {
-        long data = ElxTable.data(memory, x);
-        int capacity = ElxTable.capacity(memory, x);
-        for (int i = 0; i < capacity; i++) {
-          long key = Slot.address(data, i * 2);
-          if (Slot.type(memory, key) == Type.INVALID) {
-            continue;
-          }
-          long other = ElxTable.own(memory, y, key);
-          if (other == 0 || !equal(memory, key + Slot.SIZE, other)) {
-            return false;
-          }
-        }
-      }
-      return true;
-    } finally {
-      COMPARISONS.get()[0]--;
-    }
-  }
+  int call(Span callable, int callableIndex, Span inputs, Span outputs);
 
   /**
-   * Returns ELX length semantics for a list, table, string, or scalar value.
-   * Strings are counted by UTF-8 code points without allocating a Java string;
-   * numeric lengths report the number of bytes in the numeric type.
+   * Hashes a language value through the semantic HASH operation.
    *
-   * @param memory memory containing the value slot
-   * @param value source value slot
-   * @return logical ELX length
+   * @param source source span
+   * @param index  source slot index
+   * @return integer hash value
+   * @throws IllegalArgumentException if a HASH hook does not return one integer
    */
-  public static int length(Memory memory, long value) {
-    Type type = Slot.type(memory, value);
-    return switch (type) {
-      case LIST -> ElxList.size(memory, Slot.bits(memory, value));
-      case TABLE -> ElxTable.size(memory, Slot.bits(memory, value));
-      case STRING -> stringLength(memory, Slot.bits(memory, value));
-      default -> type.numeric() ? (type.width() + Byte.SIZE - 1) / Byte.SIZE : 0;
-    };
-  }
-
-  private static int stringLength(Memory memory, long pointer) {
-    int bytes = memory.load32(pointer);
-    int count = 0;
-    // Strings contain valid UTF-8. Count code points without exporting/allocating a Java String.
-    for (int i = 0; i < bytes; i++) {
-      if ((memory.load8(pointer + Integer.BYTES + i) & 0xc0) != 0x80) count++;
-    }
-    return count;
-  }
+  long hash(Span source, int index);
 
   /**
-   * Reads a table entry or list element into a result slot.
+   * Formats a value recursively, honoring STR and detecting container cycles.
    *
-   * @param memory memory containing source and destination slots
-   * @param target list or table value slot
-   * @param key index/key slot
-   * @param result destination slot
-   * @throws IllegalArgumentException if the target is not indexable
-   * @throws IndexOutOfBoundsException if a list index is invalid
+   * @param source source span
+   * @param index  source slot index
+   * @return formatted ELX text
    */
-  public static void getIndex(Memory memory, long target, long key, long result) {
-    Type type = Slot.type(memory, target);
-    long pointer = Slot.bits(memory, target);
-    if (type == Type.TABLE) {
-      ElxTable.get(memory, pointer, key, result);
-      return;
-    }
-    if (type == Type.LIST) {
-      int at = index(memory, key);
-      ElxList.get(memory, pointer, at, result);
-      return;
-    }
-    throw new IllegalArgumentException("Not indexable: " + type);
-  }
+  String format(Span source, int index);
 }

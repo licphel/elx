@@ -24,9 +24,12 @@
 
 package io.viki.elx.lex;
 
+import org.jspecify.annotations.Nullable;
+
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * ELX token kinds and their fixed spellings. The enum also publishes immutable
@@ -112,6 +115,7 @@ public enum Token {
   TRUE("true", true, true),
   FALSE("false", true, true),
   NULL("null", true, true),
+  VOID("void", true, true),
   ENV("env", true, true),
   PRINT("print", true, true),
   EOF("<eof>", false),
@@ -205,6 +209,20 @@ public enum Token {
    * @param line   line index
    * @param column column index
    */
-  public record Span(Token kind, int start, int end, int line, int column) {
+  public record Span(Token kind, int start, int end, int line, int column,
+                     @Nullable String sourceName) {
+    /** Validates a token kind and its half-open source coordinates. */
+    public Span {
+      Objects.requireNonNull(kind, "kind");
+      if (start < 0 || end < start || line < 1 || column < 1) {
+        throw new IllegalArgumentException("Invalid token span " + start + ".." + end
+            + " at " + line + ":" + column);
+      }
+    }
+
+    /** Creates a span whose source name is supplied by its owning compilation. */
+    public Span(Token kind, int start, int end, int line, int column) {
+      this(kind, start, end, line, column, null);
+    }
   }
 }

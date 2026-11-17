@@ -47,7 +47,7 @@ final class ObjectBench {
       local instances=[]
       for i=0l, i<$Nl, i++ { instances[i]=S(i) }
       local total=0l
-      for p in instances { total+=p:foo() }
+      for p in itr(instances) { total+=p:foo() }
       return total
       """;
   private static final int WARMUP = 0, ROUNDS = 5;

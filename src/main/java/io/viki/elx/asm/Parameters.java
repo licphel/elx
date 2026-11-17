@@ -24,6 +24,7 @@
 
 package io.viki.elx.asm;
 
+import java.util.HashSet;
 import java.util.List;
 
 /**
@@ -32,7 +33,7 @@ import java.util.List;
  * bytecode prologues rather than Java value objects. A variadic final parameter
  * receives the remaining arguments according to the ELX calling convention.
  *
- * @param names parameter names in declaration order
+ * @param names    parameter names in declaration order
  * @param optional whether each parameter may be omitted
  * @param variadic whether the final parameter collects remaining arguments
  */
@@ -40,14 +41,14 @@ public record Parameters(List<String> names, List<Boolean> optional, boolean var
   /**
    * Creates a parameter signature.
    *
-   * @param names parameter names in declaration order
+   * @param names    parameter names in declaration order
    * @param optional whether each parameter may be omitted
    * @param variadic whether the final parameter collects remaining arguments
    */
   public Parameters {
     names = List.copyOf(names);
     optional = List.copyOf(optional);
-    if (names.stream().anyMatch(String::isEmpty) || new java.util.HashSet<>(names).size() != names.size()) {
+    if (names.stream().anyMatch(String::isEmpty) || new HashSet<>(names).size() != names.size()) {
       throw new IllegalArgumentException("Empty or duplicate parameter name");
     }
     if (names.size() != optional.size() || variadic && names.isEmpty()) {
@@ -56,9 +57,9 @@ public record Parameters(List<String> names, List<Boolean> optional, boolean var
   }
 
   /**
-     * Returns the number of parameters that are not the variadic collector.
-     *
-     * @return fixed parameter count
+   * Returns the number of parameters that are not the variadic collector.
+   *
+   * @return fixed parameter count
    */
   public int fixed() {
     return names.size() - (variadic ? 1 : 0);

@@ -1,0 +1,12 @@
+native function encodeBase64(args...);
+native function decodeBase64(args...);
+native function genUuid(args...);
+local time = require("time");
+
+return {
+  encodeBase64=encodeBase64,
+  decodeBase64=decodeBase64,
+  genUuid=genUuid,
+  time=time.millis,
+  date=time.date
+};

@@ -1,0 +1,300 @@
+local Oop = require('oop.elx');
+
+local checks={value=0};
+local function check(value,message='correctness assertion') {
+  assert(value,message);
+  checks.value+=1;
+}
+
+check(1+2==3,'integer arithmetic');
+check(8/2==4 && 8%3==2,'division and remainder');
+check((5|2)==7 && (7&3)==3 && (5^1)==4,'bitwise operators');
+check((1<<4)==16 && (16>>2)==4 && (16>>>2)==4,'shift operators');
+check(bool(1.0) && !bool(0.0),'explicit casts and boolean not');
+check(short(32768)==-32768,'narrowing cast');
+check(1.5f+2.5f==4.0f && 1.5+2.5==4.0,'floating arithmetic');
+
+local sideEffects=0;
+local function bump() { sideEffects+=1; return true; };
+local v =(false && bump()==false);
+check(true || bump(),'or short circuit');
+check(sideEffects==0,'short circuit skipped call');
+
+local text='value='+17+':'+true+':'+null;
+check(text=='value=17:true:null','mixed string concatenation');
+local customText={};
+setmetatable(customText,{str=function(self) {return 'custom';}});
+check('value='+customText=='value=custom','str metamethod in concat');
+check(str(23)=='23','str builtin');
+local strings=require('str');
+check(len('a中😀')==3,'unicode scalar length');
+check(require('math').pow(2,8)==256.0,'math module');
+
+local sequence=[1,2,3];
+local right=[3,4];
+check(len(sequence+right)==5,'list concatenation');
+check(len(sequence-right)==2,'list difference');
+check(len(sequence^right)==3,'list symmetric difference');
+check(len(sequence&right)==1,'list intersection');
+local leftTable={a=1,b=2};
+local rightTable={b=3,c=4};
+check((leftTable+rightTable).a==1 && (leftTable+rightTable).b==3,'table union');
+check((leftTable-rightTable).a==1 && (leftTable-rightTable).b==void,'table difference');
+check((leftTable^rightTable).a==1 && (leftTable^rightTable).c==4 && (leftTable^rightTable).b==void,'table symmetric difference');
+check(leftTable=={a=1,b=2},'structural table equality');
+check([1,2]==[1,2] && [1,2]!=[2,1],'structural list equality');
+check(len([7]*3)==3,'list repetition');
+
+local listSum=0;
+local index=0;for value in itr([3,4,5]) {listSum+=index+value;index++;};
+check(listSum==15,'for index/value list iteration');
+local valueSum=0;
+for value in itr([3,4,5]) valueSum+=value;
+check(valueSum==12,'for value list iteration');
+local tableValues={a=3,b=4,c=5};
+local pairSum=0;
+for key,value in itr(tableValues) {pairSum+=value;};
+check(pairSum==12,'for key/value table iteration');
+local tripleSum=0;
+index=0;for key,value in itr(tableValues) {tripleSum+=index+value;index++;};
+check(tripleSum==15,'for index/key/value table iteration');
+local rangeSum=0;
+for value in range(5) rangeSum+=value;
+check(rangeSum==10,'range(stop)');
+rangeSum=0;
+for value in range(2,6) rangeSum+=value;
+check(rangeSum==14,'range(start,stop)');
+rangeSum=0;
+for value in range(5,-1,-2) rangeSum+=value;
+check(rangeSum==9,'range(start,stop,step)');
+local cLoop=0;
+for i=0,i<4,i++ {cLoop+=i;};
+check(cLoop==6,'numeric for loop');
+local unbraced=0;
+if true unbraced+=1;
+while unbraced<3 unbraced++;
+check(unbraced==3,'unbraced control body');
+if unbraced==3 {unbraced+=1;} else unbraced=0;
+check(unbraced==4,'braced if/else and unbraced else');
+local noTerminator=0;
+if true {noTerminator=1;}
+while noTerminator<2 noTerminator++;
+local function noTerminatorFunction(value) {return value+1;}
+check(noTerminator==2 && noTerminatorFunction(4)==5,'control flow and function declarations need no trailing semicolon');
+
+local function pair(a,b=2) {return a+b,a*b;};
+local sum,product=pair(3);
+check(sum==5 && product==6,'default arguments and multiple returns');
+local spread=[4,5];
+local spreadSum=pair(*spread);
+check(spreadSum==9,'positional list expansion');
+local function named(a,b=3,c=4) {return a+b+c;};
+check(named(c=5,a=1)==9,'named arguments and defaults');
+check(named(**{a=2,c=6})==11,'named table expansion');
+local function rest(first,tail...) {return first+len(tail);};
+check(rest(4,8,9)==6,'variadic list rest');
+local closureFactory=function(seed) {return function(value) {seed+=value;return seed;};};
+local closure=closureFactory(2);
+check(closure(3)==5 && closure(4)==9,'closure captures');
+
+local object={base=10};
+function object:add(value) {return self.base+value;};
+function object:twice(value) {return self:add(value)*2;}
+function object.raw(value) {return value+1;};
+check(object:add(5)==15 && object:twice(3)==26,'local colon method definition');
+check(object.raw(5)==6,'local dot method definition');
+
+local callable={base=4};
+setmetatable(callable,{call=function(self,value=3) {return self.base+value;}});
+check(callable()==7 && callable(5)==9,'call metamethod receives self');
+check(callable(value=6)==10,'named call metamethod receives self');
+local hooked={value=8};
+setmetatable(hooked,{
+  ['add']=function(self,other) {return self.value+other;},
+  ['sub']=function(self,other) {return self.value-other;},
+  get=function(self,key) {return getrawattr(self,key);},
+  set=function(self,key,value) {setrawattr(self,key,value*2);}
+});
+check(hooked+2==10 && hooked-3==5,'binary metamethods receive self and rhs');
+check(hooked.value==8,'get metamethod');
+hooked.value=5;
+check(getrawattr(hooked,'value')==10,'set metamethod');
+local equalLeft={};
+setmetatable(equalLeft,{['eq']=function(self,other) {return true;}});
+check(equalLeft=={},'equality metamethod');
+
+local function captureError(error) {return error;}
+local ok,first,second=pcall(function() {return 11,12;},captureError);
+check(ok && first==11 && second==12,'pcall forwards successful returns');
+local failed,errorObject=pcall(function() {throw('explicit failure');},captureError);
+check(!failed && type(errorObject)=='table' && len(errorObject.cause)>0 && len(errorObject.stacktrace)>0,'pcall returns {cause, stacktrace} error table');
+globalCorrectness=37;
+check(globalCorrectness==37,'global environment');
+
+local ii = int(5);
+local pointer = &ii;
+*pointer = 6;
+assert(ii==6);
+assert((*pointer)==6);
+print("What's a managed reference? - " + pointer);
+
+
+pointer = &print;
+(*pointer)("I can print");
+assert((*pointer)==print);
+local functionPointer = pointer;
+(*functionPointer)("I can print, too!");
+
+local gc = require('gc');
+local sys = require('sys');
+local localRoot = {value=61};
+globalRoot = {value=62};
+globalRemoved = {value=73};
+local localPointer = &localRoot;
+local globalPointer = &globalRoot;;
+local removedPointer = &globalRemoved;
+check((*globalPointer).value==62,'global slot pointer resolves before collection');
+local function collectDeep(depth) {
+  gc.collect();
+  if depth > 0 { return collectDeep(depth-1); }
+  return 0;
+}
+collectDeep(5);
+check((*localPointer).value==61,'active local slot pointer survives nested frames and repeated GC');
+check((*globalPointer).value==62,'global slot pointer survives nested frames and repeated GC');
+
+local function returnLocalPointer() {
+  local temporary = {value=99};
+  return &temporary;
+}
+local danglingLocal = returnLocalPointer();
+gc.collect();
+local localAlive = pcall(function() { return (*danglingLocal).value },captureError);
+check(!localAlive,'managed reference to a returned stack frame cannot be dereferenced');
+
+sys.remove(sys.env,'globalRemoved');
+gc.collect();
+local globalAlive, removedValue = pcall(function() { return (*removedPointer).value },captureError);
+print(globalAlive+": " +removedValue);
+check(!globalAlive,'managed reference to a removed global cannot be dereferenced');
+
+print('ELX resource suite passed: '+checks.value+' assertions');
+
+Animal = Oop.class();
+function Animal.ctor(self) {
+    self.food = "unknown"
+}
+
+function Animal:eat() {
+    print("I eat " + self.food)
+}
+
+function Animal.check(self, obj) {
+    if (Oop.instanceof(obj, Dog)) {
+        print("I'm dog.")
+    } else if (Oop.instanceof(obj, Cat)) {
+        print("I'm cat.")
+    } else {
+        print("I don't know.")
+    }
+}
+
+Cat = Oop.class(Animal);
+function Cat.eat(self) {
+    print("I eat fish!")
+}
+
+Dog = Oop.class(Animal);
+function Dog.ctor(self, food) {
+   self.food = food
+}
+
+CatB = Oop.class(Cat);
+function CatB.eat(self) {
+    print("I eat salmon fish!")
+}
+
+local ani = Animal();
+local cat = Cat();
+local catB = CatB();
+local dog = Dog("meat");
+
+(ani:eat());
+(cat:eat());
+(catB:eat());
+(dog:eat());
+ani:check(catB);
+assert(Oop.isAssignableFrom(Cat, CatB));
+assert(Oop.isAssignableFrom(Animal, CatB));
+assert(!Oop.isAssignableFrom(Dog, CatB));
+
+print("String Len should be == 7:"+ len('Hello你好'));
+(function() {
+local t = {};
+setmetatable(t,{"call"=function(self, o...) {print("hi!");}});
+return t;
+})()();
+
+local function nestedRecursion(seed) {
+    local function middle(depth) {
+        if depth==0 { return seed; }
+        local function inner(left) {
+            if left==0 { return depth; }
+            return inner(left-1)+seed;
+        }
+        return middle(depth-1)+inner(depth);
+    }
+    return middle;
+}
+local nested = nestedRecursion(2);
+check(nested(3)==20,'multi-level nested recursive closures');
+
+local function declaredFib(n) {
+    if n<2 { return n; }
+    return declaredFib(n-1)+declaredFib(n-2);
+}
+local assignedFib = function(n) {
+    if n<2 { return n; }
+    return assignedFib(n-1)+assignedFib(n-2);
+};
+check(declaredFib(8)==assignedFib(8) && assignedFib(8)==21,'function declaration and assignment are equivalent');
+
+local methods={base=10};
+function methods:declared(value) { return self.base+value; }
+methods.assigned=function(self,value) { return self.base+value; };
+check(methods:declared(5)==methods.assigned(methods,5),'table function declaration and assignment are equivalent');
+
+local captured = 1;
+local function upvalueTest() {
+    return function() {
+        captured++;
+    }
+}
+
+upvalueTest()();
+assert(captured==1);
+
+local function our_range(start, stop, step) {
+    local result = [];
+    local cur = start;
+    if (step > 0) {
+        while (cur <= stop) {
+            result += [cur];
+            cur += step;
+        }
+    } else if (step < 0) {
+        while (cur >= stop) {
+            result += [cur];
+            cur += step;
+        }
+    }
+    return result;
+}
+
+for (x in itr(our_range(1, 10, 2))) {
+    print(x);   // 1 3 5 7 9
+}
+
+print(strings.charAt('ABCD一二三四', 5));
+
+print('Extended function checks passed: '+checks.value+' assertions');

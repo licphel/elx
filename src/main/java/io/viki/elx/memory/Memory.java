@@ -46,7 +46,7 @@ public interface Memory extends AutoCloseable {
    *
    * @param bytes required byte capacity
    * @throws IllegalArgumentException if {@code bytes} is negative
-   * @throws IllegalStateException if this memory is closed
+   * @throws IllegalStateException    if this memory is closed
    */
   void ensureCapacity(int bytes);
 
@@ -61,7 +61,7 @@ public interface Memory extends AutoCloseable {
    * Fills a contiguous range with zero bytes.
    *
    * @param address first byte to clear
-   * @param bytes number of bytes to clear
+   * @param bytes   number of bytes to clear
    * @throws IndexOutOfBoundsException if the range is outside this memory
    */
   void clear(long address, int bytes);
@@ -71,8 +71,8 @@ public interface Memory extends AutoCloseable {
    * destination ranges are handled correctly.
    *
    * @param destination first destination byte
-   * @param source first source byte
-   * @param bytes number of bytes to copy
+   * @param source      first source byte
+   * @param bytes       number of bytes to copy
    * @throws IndexOutOfBoundsException if either range is outside this memory
    */
   void copyBytes(long destination, long source, int bytes);
@@ -113,7 +113,7 @@ public interface Memory extends AutoCloseable {
    * Writes one byte.
    *
    * @param address byte address
-   * @param value byte to store
+   * @param value   byte to store
    */
   void store8(long address, byte value);
 
@@ -121,7 +121,7 @@ public interface Memory extends AutoCloseable {
    * Writes two bytes in the backend's native byte order.
    *
    * @param address first byte address
-   * @param value 16-bit value to store
+   * @param value   16-bit value to store
    */
   void store16(long address, short value);
 
@@ -129,7 +129,7 @@ public interface Memory extends AutoCloseable {
    * Writes four bytes in the backend's native byte order.
    *
    * @param address first byte address
-   * @param value 32-bit value to store
+   * @param value   32-bit value to store
    */
   void store32(long address, int value);
 
@@ -137,7 +137,7 @@ public interface Memory extends AutoCloseable {
    * Writes eight bytes in the backend's native byte order.
    *
    * @param address first byte address
-   * @param value 64-bit value to store
+   * @param value   64-bit value to store
    */
   void store64(long address, long value);
 

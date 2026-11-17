@@ -43,7 +43,7 @@ public interface Regs extends AutoCloseable {
    * @param valueCount number of slots in the new frame
    * @return base address of the frame
    * @throws IllegalArgumentException if {@code valueCount} is negative
-   * @throws IllegalStateException if this stack is closed
+   * @throws IllegalStateException    if this stack is closed
    */
   long enter(int valueCount);
 
@@ -51,10 +51,10 @@ public interface Regs extends AutoCloseable {
    * Enters an existing window without copying or taking ownership of its
    * storage. The caller must keep the window valid until {@link #leave()}.
    *
-   * @param window base address of an existing slot window
+   * @param window     base address of an existing slot window
    * @param valueCount number of readable slots in the window
    * @throws IllegalArgumentException if {@code valueCount} is negative
-   * @throws IllegalStateException if this stack is closed
+   * @throws IllegalStateException    if this stack is closed
    */
   void enter(long window, int valueCount);
 

@@ -38,7 +38,7 @@ final class TableBench {
         rows[i]={x=i,y=i*3l,data=[i,i+1l]}
       }
       local total=0l
-      for k,row in rows {
+      for k,row in itr(rows) {
         row.x+=row.data[1]
         row.data[0]++
         local merged=row+{bonus=k%7l}

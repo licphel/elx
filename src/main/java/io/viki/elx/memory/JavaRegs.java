@@ -66,14 +66,14 @@ public final class JavaRegs implements Regs {
 
   /**
    * Allocates or reuses and enters an owned window of {@code valueCount} slots.
-   * Existing values are cleared to {@link Type#NULL}; the returned window is
+   * Existing values are cleared to {@link Type#VOID}; the returned window is
    * an active GC root until {@link #leave()} is called.
    *
    * @param valueCount number of slots to expose
    * @return base address of the active window
    * @throws IllegalArgumentException if {@code valueCount} is negative
-   * @throws ArithmeticException if the byte size overflows
-   * @throws IllegalStateException if this stack is closed
+   * @throws ArithmeticException      if the byte size overflows
+   * @throws IllegalStateException    if this stack is closed
    */
   @Override
   public long enter(int valueCount) {
@@ -91,7 +91,7 @@ public final class JavaRegs implements Regs {
     }
     long base = owned[depth];
     for (int i = 0; i < valueCount; i++) {
-      Slot.write(memory, Slot.address(base, i), Type.NULL, 0);
+      Slot.write(memory, Slot.address(base, i), Type.VOID, 0);
     }
     active[depth] = base;
     counts[depth] = valueCount;
@@ -105,10 +105,10 @@ public final class JavaRegs implements Regs {
    * <p>The caller owns the supplied memory and must keep it valid until the
    * matching {@link #leave()}; this method does not retain or free it.</p>
    *
-   * @param window existing slot-window base address
+   * @param window     existing slot-window base address
    * @param valueCount number of slots in the borrowed window
    * @throws IllegalArgumentException if {@code valueCount} is negative
-   * @throws IllegalStateException if this stack is closed
+   * @throws IllegalStateException    if this stack is closed
    */
   @Override
   public void enter(long window, int valueCount) {

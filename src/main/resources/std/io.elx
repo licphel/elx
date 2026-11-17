@@ -1,0 +1,17 @@
+native function print(args...);
+native function readText(args...);
+native function writeText(args...);
+native function appendText(args...);
+native function exists(args...);
+native function delete(args...);
+native function listDir(args...);
+
+return {
+  print=print,
+  readText=readText,
+  writeText=writeText,
+  appendText=appendText,
+  exists=exists,
+  delete=delete,
+  listDir=listDir
+};

@@ -20,7 +20,7 @@ import java.util.Objects;
 
 /** Executable advanced language contracts; no Java value/container is used for script execution. */
 public final class AdvancedTests {
-  private static final io.viki.elx.compile.Compiler COMPILER=new Compiler();
+  private static final Compiler COMPILER=new Compiler();
   private static int checks,scripts;
   private AdvancedTests() { }
   private static final class Host extends ExtHeap {
@@ -65,10 +65,10 @@ public final class AdvancedTests {
       expect(vm,"local a,b=*[1,2]; a,b=b,a; local p=[a,b,3]; local q=p+[4]; return *q",2,1,3,4);
       expect(vm,"local t=[1]; local empty=[]; return len(t), len(empty), t==[1], empty==[]",1,0,1,1);
       expect(vm,"local t=[1,2,3]; local i=1; return t[i], (t+[4])[3], t!=[1,2,4]",2,4,1);
-      expect(vm,"local n=0; for i,v in [3,4,5] { n+=i+v } return n",15);
-      expect(vm,"local n=0; for i,v in [3,4,5] { n+=i+v } return n",15);
-      expect(vm,"local n=0; for k,v in {a=3,b=4,c=5} { n+=v } return n",12);
-      expect(vm,"local n=0; for i,k,v in {a=3,b=4,c=5} { n+=i+v } return n",15);
+      expect(vm,"local n=0;local i=0; for v in itr([3,4,5]) { n+=i+v;i++ } return n",15);
+      expect(vm,"local n=0;local i=0; for v in itr([3,4,5]) { n+=i+v;i++ } return n",15);
+      expect(vm,"local n=0; for k,v in itr({a=3,b=4,c=5}) { n+=v } return n",12);
+      expect(vm,"local n=0;local i=0; for k,v in itr({a=3,b=4,c=5}) { n+=i+v;i++ } return n",15);
       expect(vm,"local xs=[3]; local i=0; local old=xs[i++]++; return old,xs[0],i",3,4,1);
       expect(vm,"local xs=[1,2]; local i=0; xs[i++]+=(i++); return xs[0],i",2,2);
       expect(vm,"local x=1; local a=++x+x++; local b=--x; return a,b,x",4,2,2);
@@ -110,11 +110,11 @@ public final class AdvancedTests {
       expect(vm,"""
           local t={x=3,reads=0,writes=0}
           setmetatable(t,{
-            getattr=function(self,k) {
+            get=function(self,k) {
               setrawattr(self,'reads',getrawattr(self,'reads')+1)
               return getrawattr(self,k)
             },
-            setattr=function(self,k,v) {
+            set=function(self,k,v) {
               setrawattr(self,'writes',getrawattr(self,'writes')+1)
               setrawattr(self,k,v)
             }
@@ -124,26 +124,29 @@ public final class AdvancedTests {
           """,3,6,2,2);
       expect(vm,"""
           local t={x=false,n=0}
-          setmetatable(t,{setattr=function(self,k,v) { setrawattr(self,'n',getrawattr(self,'n')+1);setrawattr(self,k,v) }})
+          setmetatable(t,{set=function(self,k,v) { setrawattr(self,'n',getrawattr(self,'n')+1);setrawattr(self,k,v) }})
           t.x&&=true; t.x||=true; t.x||=false
           return t.x,getrawattr(t,'n')
           """,1,1);
-      expect(vm,"local t={};local m={['+']=function(a,b) {return 1 }};setmetatable(t,m);local a=t+2;m['+']=function(a,b) {return 9 };return a,t+2",1,9);
-      expect(vm,"local t={};setmetatable(t,{['==']=function(a,b) {return true }});return t=={},t!={}",1,0);
-      expect(vm,"local t={};setmetatable(t,{['!=']=function(a,b) {return true }});return t=={},t!={}",1,1);
+      expect(vm,"local t={};local m={['add']=function(a,b) {return 1 }};setmetatable(t,m);local a=t+2;m['add']=function(a,b) {return 9 };return a,t+2",1,9);
+      expect(vm,"local t={};setmetatable(t,{['eq']=function(a,b) {return true }});return t=={},t!={}",1,0);
+      expect(vm,"local t={};setmetatable(t,{['ne']=function(a,b) {return true }});return t=={},t!={}",1,1);
       String[] binary={"+","-","*","/","%","&","|","^","<<",">>",">>>"};
-      for(String operator:binary)expect(vm,"local t={};setmetatable(t,{['"+operator+"']=function(a,b){return 17 }});return t"+operator+"2",17);
-      for(String operator:new String[]{"<","<=",">",">=","==","!="})expect(vm,"local t={};setmetatable(t,{['"+operator+"']=function(a,b){return false }});return t"+operator+"2",0);
-      for(String operator:new String[]{"+","-","~"})expect(vm,"local t={};setmetatable(t,{['"+operator+"']=function(a){return 7 }});return "+operator+"t",7);
-      expect(vm,"local t={};setmetatable(t,{['!']=function(a) {return true },bool=function(a) {return false }});return !t,bool(t)",1,0);
-      expect(vm,"local t={};setmetatable(t,{['++']=function(a) {return 12 }});local old=t++;return t,old==getrawattr({},'none')",12,0);
+      String[] binaryHooks={"add","sub","mul","div","mod","and","or","xor","shl","shr","ushr"};
+      for(int i=0;i<binary.length;i++)expect(vm,"local t={};setmetatable(t,{['"+binaryHooks[i]+"']=function(a,b){return 17 }});return t"+binary[i]+"2",17);
+      String[] comparisons={"<","<=",">",">=","==","!="},comparisonHooks={"lt","le","gt","ge","eq","ne"};
+      for(int i=0;i<comparisons.length;i++)expect(vm,"local t={};setmetatable(t,{['"+comparisonHooks[i]+"']=function(a,b){return false }});return t"+comparisons[i]+"2",0);
+      String[] unary={"+","-","~"},unaryHooks={"pos","neg","invert"};
+      for(int i=0;i<unary.length;i++)expect(vm,"local t={};setmetatable(t,{['"+unaryHooks[i]+"']=function(a){return 7 }});return "+unary[i]+"t",7);
+      expect(vm,"local t={};setmetatable(t,{['not']=function(a) {return true },bool=function(a) {return false }});return !t,bool(t)",1,0);
+      expect(vm,"local t={};setmetatable(t,{['inc']=function(a) {return 12 }});local old=t++;return t,old==getrawattr({},'none')",12,0);
       expect(vm,"local t={};local m={call=function(self,x) {return x+1 }};setmetatable(t,m);return t(3),referenceequal(getmetatable(t),m)",4,1);
-      expect(vm,"local t={};local m={['+']=function(a,b) {return 5 }};setmetatable(t,m);setmetatable(t,null);return getmetatable(t)==null,t=={}",1,1);
+      expect(vm,"local t={};local m={['add']=function(a,b) {return 5 }};setmetatable(t,m);setmetatable(t,null);return getmetatable(t)==null,t=={}",1,1);
       ProtoCheck(vm);
       library(vm,heap,host);
       String[] invalid={"return (1,2)*2","return ++1","local x=1; return x++++","return 1--","return (*1)"};
       for(String source:invalid)failure(SyntaxException.class,()->COMPILER.compile(source));
-      String[] runtime={"return [1][1]","local p=[1,2];return p[2]","local t={}; return t()","setmetatable([], {})","setmetatable({}, {getattr=2})","local t={};setmetatable(t,{['==']=function(a,b) {return 1 }});return t=={}","local t={};setmetatable(t,{getattr=function(self,k) {return self[k] }});return t.x"};
+      String[] runtime={"return [1][1]","local p=[1,2];return p[2]","local t={}; return t()","setmetatable([], {})","setmetatable({}, {get=2})","local t={};setmetatable(t,{['eq']=function(a,b) {return 1 }});return t=={}","local t={};setmetatable(t,{get=function(self,k) {return self[k] }});return t.x"};
       for(String source:runtime){vm.budget(2000);failure(RuntimeException.class,()->vm.execute(COMPILER.compile(source)));check(regs.depth()==0);}
       vm.budget(100000000);expect(vm,"return 42",42);
     }
@@ -151,15 +154,19 @@ public final class AdvancedTests {
   private static void ProtoCheck(VM vm){
     Prototype list=COMPILER.compile("local total=0;for i=0,i<1000,i++ { local p=[i,2];total+=p[0]+p[1] } return total");
     boolean allocated=false;for(int pc=0;pc<list.wordCount();){
-      Op op= Instr.op(list.word(pc));allocated|=op==Op.CX_ALLOC;pc+=op.format().words();}check(allocated);
+      Op op= Instr.op(list.word(pc));allocated|=op==Op.NEWLIST;pc+=op.format().words();}check(allocated);
     vm.execute(list);check(Slot.bits(vm.memory(),vm.results())==501500);scripts++;
   }
   private static void library(VM vm,ElxHeap heap,Host host){
     SimpleLibrary library=new SimpleLibrary();
     library.function("twice",COMPILER.compileFunction("function(x) { return x*2 }"));
-    library.function("print",a->{a.returnCount(host.nativeInvoke("print",a.inputAddress(),a.size(),a.outputAddress(),a.resultCapacity()));});
-    library.function("gc",a->{a.returnCount(host.nativeInvoke("gc",a.inputAddress(),a.size(),a.outputAddress(),a.resultCapacity()));});
-    library.function("require",a->{a.returnCount(host.nativeInvoke("require",a.inputAddress(),a.size(),a.outputAddress(),a.resultCapacity()));});
+    library.function("print",a->{for(int i=0;i<a.size();i++) host.printed.append(a.operations().format(a,i));});
+    library.function("gc",a->{vm.requestGc(true);});
+    library.function("require",a->{
+      var table=a.scratch(1);var pair=a.scratch(2);a.containers().newTable(table,0,1);
+      pair.setString(0,"twice");pair.set(1,Type.FUNCTION,host.twice);
+      a.containers().tableSet(table,0,pair,0,pair,1);a.rvalue(table,0);
+    });
     library.constant("seed",Type.LONG,7);
     DynamicLibrary loaded=vm.link(library);
     Symbol symbol= Objects.requireNonNull(library.resolve("twice"));
@@ -167,7 +174,7 @@ public final class AdvancedTests {
     Prototype image=COMPILER.compile("local io=require('io');print(io.twice(seed));return twice(4)",library);
     for(int i=0;i<3;i++){vm.execute(image);check(Slot.bits(vm.memory(),vm.results())==8);}
     check(vm.link(library)==loaded);check(host.printed.toString().equals("141414"));scripts+=3;
-    check(Disassembler.dump(image).contains("CX_EX_CALL"));check(Disassembler.dump(image).contains("CX_CALL"));
+    check(Disassembler.dump(image).contains("CALL"));
     Prototype shadow=COMPILER.compile("local function twice(x) {return x+1 } return twice(4)",library);vm.execute(shadow);check(Slot.bits(vm.memory(),vm.results())==5);scripts++;
     Prototype collected=COMPILER.compile("local x=4;local f=function() {return ++x };gc();local t=[];return f(),f()",library);vm.execute(collected);check(Slot.bits(vm.memory(),vm.results())==5);check(Slot.bits(vm.memory(),vm.results()+Slot.SIZE)==6);scripts++;
   }

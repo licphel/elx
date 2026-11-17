@@ -1,0 +1,10 @@
+native function unload(args...);
+native function remove(args...);
+native function identity(args...);
+
+return {
+  unload=unload,
+  remove=remove,
+  identity=identity,
+  ['env']=env
+};

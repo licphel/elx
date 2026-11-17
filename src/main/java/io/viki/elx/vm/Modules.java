@@ -29,13 +29,14 @@ import io.viki.elx.asm.Prototype;
 import io.viki.elx.compile.Compiler;
 import io.viki.elx.lib.Library;
 import io.viki.elx.lib.ModuleResolver;
-import io.viki.elx.lib.Std;
+import io.viki.elx.lib.std.Std;
 import io.viki.elx.memory.ElxHeap;
 import io.viki.elx.memory.HeapVisitor;
 import io.viki.elx.memory.Slot;
-import io.viki.elx.value.ElxTable;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -77,7 +78,7 @@ public final class Modules implements AutoCloseable {
    * @param resolver resolver to retain until removed by {@link #close()}
    * @throws NullPointerException if {@code resolver} is null
    */
-  public void resolver(ModuleResolver resolver) {
+  public void addHandler(ModuleResolver resolver) {
     resolvers.add(resolver);
   }
 
@@ -85,10 +86,10 @@ public final class Modules implements AutoCloseable {
    * Requires a borrowed ELX string pointer and writes the module value to a slot.
    * A one-entry pointer cache avoids repeatedly exporting the same hot module name.
    *
-   * @param name ELX string pointer naming the module
+   * @param name   ELX string pointer naming the module
    * @param result destination slot
    * @throws IllegalArgumentException if {@code name} is not an ELX string
-   * @throws IllegalStateException if the module cannot be loaded or a cycle is found
+   * @throws IllegalStateException    if the module cannot be loaded or a cycle is found
    */
   public void require(long name, long result) {
     if (lastName == name && name != 0) {
@@ -107,11 +108,11 @@ public final class Modules implements AutoCloseable {
    * Resolvers run in registration order, followed by the configured directory
    * and bundled resources. A successful module remains rooted until unload.
    *
-   * @param name module name or resource stem
+   * @param name   module name or resource stem
    * @param result destination slot receiving the module value
-   * @throws NullPointerException if {@code name} is null
+   * @throws NullPointerException  if {@code name} is null
    * @throws IllegalStateException if loading is circular or compilation/execution fails
-   * @throws java.io.UncheckedIOException if a filesystem or resource read fails
+   * @throws UncheckedIOException  if a filesystem or resource read fails
    */
   public void require(String name, long result) {
     Loaded known = loaded.get(name);
@@ -125,47 +126,25 @@ public final class Modules implements AutoCloseable {
     long cell = vm.heap().allocate(ElxHeap.Layout.VALUES, 1);
     vm.heap().retain(cell);
     try {
-      Library library = Std.create(name, vm);
-      if (library != null) {
-        var linked = vm.link(library);
-        long table = ElxTable.create(vm.heap());
-        Slot.write(vm.memory(), cell, Type.TABLE, table);
-        long key = vm.heap().arena().allocate(Slot.SIZE);
-        try {
-          for (int i = 0; i < library.size(); i++) {
-            Slot.write(vm.memory(), key, Type.STRING, vm.heap().importString(library.name(i)));
-            ElxTable.set(vm.heap(), table, key, linked.entry(i));
-          }
-        } finally {
-          vm.heap().arena().free(key);
+      ModuleResolver.Source source = source(name);
+      Library nativeLibrary = Std.create(name, vm);
+      Library symbols = nativeLibrary == null ? source.library() : nativeLibrary;
+      Prototype image = new Compiler().compile(source.name(), source.text(), symbols, vm.optimization());
+      try {
+        int count = vm.execute(image);
+        if (count == 0) {
+          Slot.write(vm.memory(), cell, Type.BOOL, 1);
+        } else {
+          Slot.copy(vm.memory(), cell, vm.results(), 1);
         }
-        if (name.equals("sys")) {
-          long scratch = vm.heap().arena().allocate(2 * Slot.SIZE);
-          try {
-            Slot.write(vm.memory(), scratch, Type.STRING, vm.heap().importString("env"));
-            Slot.write(vm.memory(), scratch + Slot.SIZE, Type.TABLE, vm.globals());
-            ElxTable.set(vm.heap(), table, scratch, scratch + Slot.SIZE);
-          } finally {
-            vm.heap().arena().free(scratch);
-          }
+      } catch (RuntimeException | Error failure) {
+        vm.unload(image);
+        if (nativeLibrary != null) {
+          vm.unload(nativeLibrary);
         }
-        loaded.put(name, new LibraryModule(cell, library));
-      } else {
-        ModuleResolver.Source source = source(name);
-        Prototype image = new Compiler().compile(source.name(), source.text(), source.library(), vm.optimization());
-        try {
-          int count = vm.execute(image);
-          if (count == 0) {
-            Slot.write(vm.memory(), cell, Type.BOOL, 1);
-          } else {
-            Slot.copy(vm.memory(), cell, vm.results(), 1);
-          }
-        } catch (RuntimeException | Error failure) {
-          vm.unload(image);
-          throw failure;
-        }
-        loaded.put(name, new ScriptModule(cell, image));
+        throw failure;
       }
+      loaded.put(name, new Loaded(cell, image, nativeLibrary));
       Slot.copy(vm.memory(), result, cell, 1);
     } finally {
       vm.heap().release(cell);
@@ -174,6 +153,10 @@ public final class Modules implements AutoCloseable {
   }
 
   private ModuleResolver.Source source(String name) {
+    ModuleResolver.Source builtin = builtinSource(name);
+    if (builtin != null) {
+      return builtin;
+    }
     for (ModuleResolver resolver : resolvers) {
       ModuleResolver.Source source = resolver.resolve(name);
       if (source != null) {
@@ -244,23 +227,38 @@ public final class Modules implements AutoCloseable {
     resolvers.clear();
   }
 
-  private sealed interface Loaded permits ScriptModule, LibraryModule {
-    long value();
-
-    void unload(VM vm);
-  }
-
-  private record ScriptModule(long value, Prototype image) implements Loaded {
-    @Override
-    public void unload(VM vm) {
-      vm.unload(image);
+  /**
+   * Reads a built-in ELX module from the packaged {@code /std/} resource
+   * directory.
+   *
+   * <p>Built-in scripts are compiled and cached like any other module, but
+   * they take precedence over host resolvers and the filesystem so a host
+   * cannot accidentally shadow the standard library. A name such as {@code
+   * list} maps to {@code /std/list.elx}; dotted names map to nested
+   * directories.</p>
+   *
+   * @param name requested module name
+   * @return source description, or {@code null} when no packaged script exists
+   */
+  private ModuleResolver.@Nullable Source builtinSource(String name) {
+    String path = "/std/" + name.replace('.', '/') + ".elx";
+    try (InputStream stream = Modules.class.getResourceAsStream(path)) {
+      if (stream == null) {
+        return null;
+      }
+      String text = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+      return new ModuleResolver.Source(path, text);
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read built-in module " + path, e);
     }
   }
 
-  private record LibraryModule(long value, Library library) implements Loaded {
-    @Override
-    public void unload(VM vm) {
-      vm.unload(library);
+  private record Loaded(long value, Prototype image, @Nullable Library nativeLibrary) {
+    private void unload(VM vm) {
+      vm.unload(image);
+      if (nativeLibrary != null) {
+        vm.unload(nativeLibrary);
+      }
     }
   }
 }

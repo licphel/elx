@@ -1,0 +1,45 @@
+native function abs(args...);
+native function sqrt(args...);
+native function floor(args...);
+native function ceil(args...);
+native function sin(args...);
+native function cos(args...);
+native function tan(args...);
+native function asin(args...);
+native function acos(args...);
+native function atan(args...);
+native function log(args...);
+native function exp(args...);
+native function to_degrees(args...);
+native function to_radians(args...);
+native function pow(args...);
+native function fmod(args...);
+native function modf(args...);
+native function min(args...);
+native function max(args...);
+native pi: double;
+native inf: double;
+
+return {
+  abs=abs,
+  sqrt=sqrt,
+  floor=floor,
+  ceil=ceil,
+  sin=sin,
+  cos=cos,
+  tan=tan,
+  asin=asin,
+  acos=acos,
+  atan=atan,
+  log=log,
+  exp=exp,
+  to_degrees=to_degrees,
+  to_radians=to_radians,
+  pi=pi,
+  inf=inf,
+  pow=pow,
+  fmod=fmod,
+  modf=modf,
+  min=min,
+  max=max
+};

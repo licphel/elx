@@ -1,0 +1,9 @@
+native function collect(args...);
+native function pin(args...);
+native function unpin(args...);
+
+return {
+  collect=collect,
+  pin=pin,
+  unpin=unpin
+};

@@ -23,6 +23,6 @@
  */
 
 @NullMarked
-package io.viki.elx.bench;
+package io.viki.momentum.elx.bench;
 
 import org.jspecify.annotations.NullMarked;

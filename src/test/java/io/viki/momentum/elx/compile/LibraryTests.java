@@ -4,8 +4,8 @@ import io.viki.elx.Type;
 import io.viki.elx.asm.Assembler;
 import io.viki.elx.asm.Op;
 import io.viki.elx.asm.Prototype;
-import io.viki.elx.compile.Compiler;
-import io.viki.elx.lib.Args;
+import io.viki.elx.lib.Span;
+import io.viki.elx.vm.Slots;
 import io.viki.elx.lib.DynamicLibrary;
 import io.viki.elx.lib.SimpleLibrary;
 import io.viki.elx.memory.*;
@@ -24,12 +24,12 @@ public final class LibraryTests {
     @Override protected int invoke(Object target,long member,long args,int count,long result,int capacity){throw new UnsupportedOperationException();}
   }
   public static void run(){
-    io.viki.elx.compile.Compiler compiler=new io.viki.elx.compile.Compiler();
+    Compiler compiler=new Compiler();
     SimpleLibrary definitions=new SimpleLibrary();
     definitions.constant("seed",Type.LONG,7).text("label","你好");
     definitions.function("add",compiler.compileFunction("function(a,b) { return a+b+seed }",definitions));
     definitions.function("multiply",args->{args.rl(args.i(0)*args.i(1));});
-    definitions.function("bytes",args->{args.ri(args.memory().load32(args.bits(0)));});
+    definitions.function("bytes",args->{args.ri(Slots.heap(args).strings().utf8Length(args.bits(0)));});
     SimpleLibrary dependent=new SimpleLibrary();dependent.function("forward",compiler.compileFunction("function(x) { return add(x,2) }",definitions));
     Prototype source=compiler.compile("local f=add;local callback=multiply;return f(2,3),callback(6,7),bytes(label)",definitions);
     for(boolean nativeMemory:new boolean[]{false,true}){
@@ -49,10 +49,10 @@ public final class LibraryTests {
         for(int n=0;n<3;n++){check(vm.execute(source)==3);check(Slot.bits(memory,vm.results())==12);check(Slot.bits(memory,vm.results()+Slot.SIZE)==42);check(Slot.bits(memory,vm.results()+2L*Slot.SIZE)==6);}
         check(heap.exportString(Slot.bits(memory,linked.entry(1))).equals("你好"));
         check(vm.execute(compiler.compile("return forward(3)",dependent))==1);check(Slot.bits(memory,vm.results())==12);
-        Prototype gc=new Assembler().r(Op.CX_SAFEPOINT,0,0,0).r(Op.CX_RETURN,0,0,0).build(1,0);vm.requestGc(true);vm.execute(gc);
+        Prototype gc=new Assembler().r(Op.SAFEPOINT,0,0,0).r(Op.RETURN,0,0,0).build(1,0);vm.requestGc(true);vm.execute(gc);
         check(vm.link(definitions)==linked);vm.execute(source);check(Slot.bits(memory,vm.results())==12);
         SimpleLibrary reentry=new SimpleLibrary();reentry.function("nested", args->{
-          vm.requestGc(true);vm.execute(compiler.compile("local t=[];return 42"));Slot.copy(args.memory(),args.outputAddress(),vm.results(),1);args.returnCount(1);
+          vm.requestGc(true);vm.execute(compiler.compile("local t=[];return 42"));args.r(Slot.type(memory,vm.results()),Slot.bits(memory,vm.results()));
         });
         vm.execute(compiler.compile("return nested()",reentry));check(Slot.bits(memory,vm.results())==42);check(regs.depth()==0);
         argsChecks(compiler, vm, memory, regs);
@@ -65,11 +65,11 @@ public final class LibraryTests {
     SimpleLibrary library=new SimpleLibrary();
     library.function("typed", a -> {
       a.arity(6);
-      check(a.typeof(0)==Type.INT && a.i(0)==7);
+      check(a.type(0)==Type.INT && a.i(0)==7);
       check(a.d(1)==2.5 && a.b(2));
       check(a.s(3).equals("你好"));
-      check(ElxList.size(a.memory(),a.l(4))==2);
-      check(ElxTable.size(a.memory(),a.t(5))==1);
+      check(a.containers().listSize(a,4)==2);
+      check(a.containers().tableSize(a,5)==1);
       a.rl(a.i(0)+1);
       a.rd(a.d(1)*2);
       a.rb(a.b(2));
@@ -78,10 +78,10 @@ public final class LibraryTests {
     vm.execute(compiler.compile("local a,b,c,d=typed(7,2.5,true,'你好',[1,2],{x=3}); return a,b,c,d",library));
     check(Slot.bits(memory,vm.results())==8);
     check(Slot.getDouble(memory,vm.results()+Slot.SIZE)==5);
-    check(Slot.getBoolean(memory,vm.results()+2L*Slot.SIZE));
+    check((Slot.bits(memory,vm.results()+2L*Slot.SIZE)!=0));
     check(vm.heap().exportString(Slot.bits(memory,vm.results()+3L*Slot.SIZE)).equals("你好!"));
 
-    Args[] outer=new Args[1];
+    Span[] outer=new Span[1];
     library=new SimpleLibrary();
     SimpleLibrary nested=library;
     library.function("reenter", a -> {

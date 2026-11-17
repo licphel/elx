@@ -1,0 +1,34 @@
+native function create(args...);
+native function get(args...);
+native function set(args...);
+native function remove(args...);
+native function has(args...);
+native function keys(args...);
+native function values(args...);
+native function entries(args...);
+native function merge(args...);
+native function mergeInto(args...);
+native function clear(args...);
+native function clone(args...);
+native function invert(args...);
+native function size(args...);
+native function isEmpty(args...);
+
+local table = {};
+table.create = create;
+table.get = get;
+table.set = set;
+table.remove = remove;
+table.has = has;
+table.keys = keys;
+table.values = values;
+table.entries = entries;
+table.merge = merge;
+table.mergeInto = mergeInto;
+table.clear = clear;
+table.clone = clone;
+table.invert = invert;
+table.size = size;
+table.isEmpty = isEmpty;
+
+return table;

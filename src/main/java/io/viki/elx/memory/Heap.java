@@ -57,7 +57,7 @@ public interface Heap<T extends @Nullable Object> extends AutoCloseable {
   /**
    * Visits references contained by one marked allocation.
    *
-   * @param ptr allocation pointer
+   * @param ptr     allocation pointer
    * @param visitor reference visitor
    */
   void trace(long ptr, HeapVisitor visitor);
@@ -108,7 +108,7 @@ public interface Heap<T extends @Nullable Object> extends AutoCloseable {
   /**
    * Creates an explicit lifetime token for one allocation.
    *
-   * @param ptr allocation pointer
+   * @param ptr  allocation pointer
    * @param mode retention policy
    * @return generation-checked pin
    */

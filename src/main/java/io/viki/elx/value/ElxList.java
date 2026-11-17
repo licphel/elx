@@ -56,12 +56,12 @@ public final class ElxList {
   /**
    * Appends one existing slot value to a list, growing the backing region as needed.
    *
-   * @param heap owning ELX heap
-   * @param list list pointer
+   * @param heap  owning ELX heap
+   * @param list  list pointer
    * @param value source slot address
    * @throws IndexOutOfBoundsException if the list descriptor is invalid
-   * @throws ArithmeticException if the backing capacity overflows
-   * @throws IllegalStateException if the heap is closed or the list is dead
+   * @throws ArithmeticException       if the backing capacity overflows
+   * @throws IllegalStateException     if the heap is closed or the list is dead
    */
   public static void append(ElxHeap heap, long list, long value) {
     Memory memory = heap.memory();
@@ -87,8 +87,8 @@ public final class ElxList {
    * @param type runtime type
    * @param bits raw payload
    * @throws IndexOutOfBoundsException if the list descriptor is invalid
-   * @throws ArithmeticException if the backing capacity overflows
-   * @throws IllegalStateException if the heap is closed or the list is dead
+   * @throws ArithmeticException       if the backing capacity overflows
+   * @throws IllegalStateException     if the heap is closed or the list is dead
    */
   public static void append(ElxHeap heap, long list, Type type, long bits) {
     Memory memory = heap.memory();
@@ -107,11 +107,110 @@ public final class ElxList {
   }
 
   /**
+   * Inserts one slot value at {@code index}, shifting later elements right.
+   *
+   * <p>{@code index == size} is an append. The backing region grows when the
+   * logical length reaches its capacity. The source slot is copied before any
+   * growth, so {@code value} may alias an element of the same list.</p>
+   *
+   * @param heap  owning ELX heap
+   * @param list  list pointer
+   * @param index insertion position in {@code 0..size}
+   * @param value source slot address
+   * @throws IndexOutOfBoundsException if {@code index} is outside {@code 0..size}
+   * @throws ArithmeticException       if the backing capacity overflows
+   * @throws IllegalStateException     if the heap is closed or the list is dead
+   */
+  public static void insert(ElxHeap heap, long list, int index, long value) {
+    Memory memory = heap.memory();
+    int size = ElxList.size(memory, list), capacity = ElxList.capacity(memory, list);
+    if (index < 0 || index > size) {
+      throw new IndexOutOfBoundsException("ELX list insert " + index + " / " + size);
+    }
+    long data = ElxList.data(memory, list);
+    long staged = heap.arena().allocate(Slot.SIZE);
+    try {
+      Slot.copy(memory, staged, value, 1);
+      if (size == capacity) {
+        int next = Math.multiplyExact(capacity, 2);
+        long replacement = heap.allocate(ElxHeap.Layout.VALUES, next);
+        Slot.copy(memory, replacement, data, size);
+        data = replacement;
+        Slot.write(memory, Slot.address(list, DATA), Type.PTR, data);
+        Slot.write(memory, Slot.address(list, CAPACITY), Type.INT, next);
+      }
+      if (index < size) {
+        memory.copyBytes(Slot.address(data, index + 1), Slot.address(data, index),
+            (size - index) * Slot.SIZE);
+      }
+      Slot.copy(memory, Slot.address(data, index), staged, 1);
+      ElxList.length(memory, list, size + 1);
+    } finally {
+      heap.arena().free(staged);
+    }
+  }
+
+  /**
+   * Removes the element at {@code index} and writes it to {@code result}.
+   *
+   * <p>Later elements shift left. The removed slot is copied to {@code result}
+   * before the shift, so {@code result} may alias list storage.</p>
+   *
+   * @param heap   owning ELX heap
+   * @param list   list pointer
+   * @param index  element position in {@code 0..size-1}
+   * @param result destination slot address
+   * @throws IndexOutOfBoundsException if {@code index} is outside the list
+   * @throws IllegalStateException     if the heap is closed or the list is dead
+   */
+  public static void removeAt(ElxHeap heap, long list, int index, long result) {
+    Memory memory = heap.memory();
+    int size = ElxList.size(memory, list);
+    if (index < 0 || index >= size) {
+      throw new IndexOutOfBoundsException("ELX list remove " + index + " / " + size);
+    }
+    long data = ElxList.data(memory, list);
+    long staged = heap.arena().allocate(Slot.SIZE);
+    try {
+      Slot.copy(memory, staged, Slot.address(data, index), 1);
+      if (index + 1 < size) {
+        memory.copyBytes(Slot.address(data, index), Slot.address(data, index + 1),
+            (size - index - 1) * Slot.SIZE);
+      }
+      Slot.write(memory, Slot.address(data, size - 1), Type.NULL, 0);
+      ElxList.length(memory, list, size - 1);
+      Slot.copy(memory, result, staged, 1);
+    } finally {
+      heap.arena().free(staged);
+    }
+  }
+
+  /**
+   * Removes every element from a list without shrinking its backing region.
+   *
+   * <p>Slots are cleared to {@link Type#NULL} so the collector does not retain
+   * elements that are no longer logically present.</p>
+   *
+   * @param heap owning ELX heap
+   * @param list list pointer
+   * @throws IllegalStateException if the heap is closed or the list is dead
+   */
+  public static void clear(ElxHeap heap, long list) {
+    Memory memory = heap.memory();
+    int size = ElxList.size(memory, list);
+    long data = ElxList.data(memory, list);
+    for (int i = 0; i < size; i++) {
+      Slot.write(memory, Slot.address(data, i), Type.NULL, 0);
+    }
+    ElxList.length(memory, list, 0);
+  }
+
+  /**
    * Copies one list element into a destination slot.
    *
    * @param memory memory containing the list
-   * @param list list pointer
-   * @param index element index
+   * @param list   list pointer
+   * @param index  element index
    * @param result destination slot address
    * @throws IndexOutOfBoundsException if {@code index} is outside the logical list
    */
@@ -125,13 +224,13 @@ public final class ElxList {
   /**
    * Replaces one element, or appends when {@code index == size}.
    *
-   * @param heap owning ELX heap
-   * @param list list pointer
+   * @param heap  owning ELX heap
+   * @param list  list pointer
    * @param index element index
    * @param value source slot address
    * @throws IndexOutOfBoundsException if {@code index} is neither an existing
-   *                                  element nor the append position
-   * @throws IllegalStateException if the heap is closed or the list is dead
+   *                                   element nor the append position
+   * @throws IllegalStateException     if the heap is closed or the list is dead
    */
   public static void set(ElxHeap heap, long list, int index, long value) {
     Memory memory = heap.memory();
@@ -150,7 +249,7 @@ public final class ElxList {
    *
    * @param memory memory containing the list
    * @param result destination tuple address
-   * @param list list pointer
+   * @param list   list pointer
    * @param cursor current element cursor
    * @throws IndexOutOfBoundsException if the destination tuple is not addressable
    */
@@ -170,12 +269,12 @@ public final class ElxList {
   /**
    * Implements list repetition for the VM list operator.
    *
-   * @param heap owning ELX heap
+   * @param heap   owning ELX heap
    * @param result destination slot
    * @param source source list pointer
-   * @param times number of repetitions
+   * @param times  number of repetitions
    * @throws IllegalArgumentException if {@code times} or the resulting length is invalid
-   * @throws ArithmeticException if the resulting length overflows
+   * @throws ArithmeticException      if the resulting length overflows
    */
   static void repeat(ElxHeap heap, long result, long source, long times) {
     Memory memory = heap.memory();
@@ -202,7 +301,7 @@ public final class ElxList {
   private static boolean contains(Memory memory, long list, long value) {
     long data = ElxList.data(memory, list);
     for (int i = 0; i < ElxList.size(memory, list); i++) {
-      if (ValueOperations.equal(memory, Slot.address(data, i), value)) {
+      if (RawValues.equal(memory, Slot.address(data, i), value)) {
         return true;
       }
     }
@@ -212,7 +311,7 @@ public final class ElxList {
   /**
    * Returns the number of logical elements in a list descriptor.
    *
-   * @param memory memory containing the list
+   * @param memory    memory containing the list
    * @param container list pointer
    * @return logical element count
    * @throws IllegalArgumentException if the descriptor does not contain a valid count
@@ -224,7 +323,7 @@ public final class ElxList {
   /**
    * Returns the allocated backing capacity of a list descriptor.
    *
-   * @param memory memory containing the list
+   * @param memory    memory containing the list
    * @param container list pointer
    * @return backing slot capacity
    */
@@ -235,7 +334,7 @@ public final class ElxList {
   /**
    * Returns the backing value-region pointer of a list descriptor.
    *
-   * @param memory memory containing the list
+   * @param memory    memory containing the list
    * @param container list pointer
    * @return backing value-region pointer
    * @throws IllegalArgumentException if the descriptor does not contain a pointer
@@ -251,21 +350,21 @@ public final class ElxList {
   /**
    * Combines two lists for ELX addition/union/intersection/difference operators.
    *
-   * @param heap owning ELX heap
-   * @param op list operator
+   * @param heap   owning ELX heap
+   * @param op     list operator
    * @param result destination slot
-   * @param left left list pointer
-   * @param right right list pointer
+   * @param left   left list pointer
+   * @param right  right list pointer
    * @throws IllegalArgumentException if {@code op} is not a supported list operator
-   * @throws IllegalStateException if the heap is closed or an operand is dead
+   * @throws IllegalStateException    if the heap is closed or an operand is dead
    */
   public static void combine(ElxHeap heap, Op op, long result, long left, long right) {
     long output = create(heap);
-    copySide(heap, op == Op.BOR ? Op.IADD : op == Op.BXOR ? Op.ISUB : op, output, left, right);
-    if (op == Op.IADD) {
-      copySide(heap, Op.IADD, output, right, left);
+    copySide(heap, op == Op.BOR ? Op.ADD : op == Op.BXOR ? Op.SUB : op, output, left, right);
+    if (op == Op.ADD) {
+      copySide(heap, Op.ADD, output, right, left);
     } else if (op == Op.BOR || op == Op.BXOR) {
-      copySide(heap, Op.ISUB, output, right, left);
+      copySide(heap, Op.SUB, output, right, left);
     }
     Slot.write(heap.memory(), result, Type.LIST, output);
   }
@@ -275,7 +374,7 @@ public final class ElxList {
     long storage = data(memory, source);
     for (int i = 0; i < size(memory, source); i++) {
       long key = Slot.address(storage, i);
-      boolean include = op == Op.IADD || (op == Op.BAND) == contains(memory, other, key);
+      boolean include = op == Op.ADD || (op == Op.BAND) == contains(memory, other, key);
       if (include) {
         append(heap, output, key);
       }

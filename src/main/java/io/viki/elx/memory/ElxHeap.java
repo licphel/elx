@@ -40,10 +40,10 @@ public final class ElxHeap extends ManagedHeap<Long> {
   private static final int MIN_CONTAINER_CAPACITY = 8;
   private final Memory memory;
   private final Arena arena;
+  private final Utf8StringStore strings;
   private long allocatedBytes;
   private Layout[] layouts = new Layout[INITIAL_CAPACITY];
   private int[] lengths = new int[INITIAL_CAPACITY];
-
   /**
    * Creates an ELX heap using the supplied arena.
    *
@@ -52,6 +52,11 @@ public final class ElxHeap extends ManagedHeap<Long> {
   public ElxHeap(Arena arena) {
     this.arena = arena;
     this.memory = arena.memory();
+    this.strings = new Utf8StringStore(this);
+  }
+
+  public StringStore strings() {
+    return strings;
   }
 
   /** @return bytes currently reserved by live ELX allocations */
@@ -83,11 +88,11 @@ public final class ElxHeap extends ManagedHeap<Long> {
   /**
    * Allocates a linked image with traceable slots followed by opaque bytes.
    *
-   * @param slots number of traceable slots
+   * @param slots    number of traceable slots
    * @param rawBytes opaque suffix size
    * @return image base pointer
-   * @throws ArithmeticException if the requested byte size overflows
-   * @throws OutOfMemoryError if the arena cannot grow
+   * @throws ArithmeticException   if the requested byte size overflows
+   * @throws OutOfMemoryError      if the arena cannot grow
    * @throws IllegalStateException if this heap is closed
    */
   public long allocateImage(int slots, int rawBytes) {
@@ -98,7 +103,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
     layouts[entry] = Layout.IMAGE;
     lengths[entry] = slots;
     for (int i = 0; i < slots; i++) {
-      Slot.write(memory, Slot.address(address, i), Type.NULL, 0);
+      Slot.write(memory, Slot.address(address, i), Type.VOID, 0);
     }
     return address;
   }
@@ -116,9 +121,9 @@ public final class ElxHeap extends ManagedHeap<Long> {
    * @param length requested logical length or backing capacity
    * @return allocation base pointer
    * @throws IllegalArgumentException if {@code length} is negative
-   * @throws ArithmeticException if the requested byte size overflows
-   * @throws OutOfMemoryError if the arena cannot grow
-   * @throws IllegalStateException if this heap is closed
+   * @throws ArithmeticException      if the requested byte size overflows
+   * @throws OutOfMemoryError         if the arena cannot grow
+   * @throws IllegalStateException    if this heap is closed
    */
   public long allocate(Layout layout, int length) {
     checkOpen();
@@ -130,7 +135,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
       case VALUES, CLOSURE, IMAGE, REFERENCE -> Math.multiplyExact(length, Slot.SIZE);
       case STRING -> Math.addExact(Integer.BYTES, length);
       case LIST -> CONTAINER_HEADER_SLOTS * Slot.SIZE;
-      case TABLE -> 5 * Slot.SIZE;
+      case TABLE -> 6 * Slot.SIZE;
     };
     allocatedBytes += bytes;
     long ptr = arena.allocate(bytes);
@@ -139,7 +144,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
     lengths[entry] = length;
     if (layout == Layout.VALUES || layout == Layout.CLOSURE || layout == Layout.IMAGE || layout == Layout.REFERENCE) {
       for (int i = 0; i < length; i++) {
-        Slot.write(memory, Slot.address(ptr, i), Type.NULL, 0);
+        Slot.write(memory, Slot.address(ptr, i), Type.VOID, 0);
       }
     }
     if (layout == Layout.LIST || layout == Layout.TABLE) {
@@ -159,6 +164,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
       if (layout == Layout.TABLE) {
         Slot.write(memory, Slot.address(ptr, 3), Type.NULL, 0);
         Slot.write(memory, Slot.address(ptr, 4), Type.NULL, 0);
+        Slot.write(memory, Slot.address(ptr, 5), Type.LONG, 0);
       }
     }
     if (layout == Layout.STRING) {
@@ -172,8 +178,8 @@ public final class ElxHeap extends ManagedHeap<Long> {
    *
    * @param text text to encode
    * @return string pointer
-   * @throws NullPointerException if {@code text} is null
-   * @throws OutOfMemoryError if the arena cannot grow
+   * @throws NullPointerException  if {@code text} is null
+   * @throws OutOfMemoryError      if the arena cannot grow
    * @throws IllegalStateException if this heap is closed
    */
   public long importString(String text) {
@@ -196,7 +202,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
    * @return decoded Java text
    * @throws IllegalArgumentException if the pointer does not identify a string
    *                                  layout
-   * @throws IllegalStateException if the pointer is dead or the heap is closed
+   * @throws IllegalStateException    if the pointer is dead or the heap is closed
    */
   public String exportString(long ptr) {
     int at = entry(ptr);
@@ -223,6 +229,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
 
   @Override
   protected void dispose(int index, long ptr) {
+    strings.invalidate();
     arena.free(ptr);
     layouts[index] = Layout.BYTES;
     lengths[index] = 0;
@@ -232,7 +239,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
    * Visits reference slots in an allocation without recursively traversing
    * their targets.
    *
-   * @param ptr base or interior pointer to a traceable allocation
+   * @param ptr     base or interior pointer to a traceable allocation
    * @param visitor callback for each reference slot
    * @throws IllegalStateException if the pointer is dead or the heap is closed
    */
@@ -244,7 +251,7 @@ public final class ElxHeap extends ManagedHeap<Long> {
     }
     long base = pointer(at);
     int count = layouts[at] == Layout.REFERENCE || layouts[at] == Layout.VALUES || layouts[at] == Layout.CLOSURE || layouts[at] == Layout.IMAGE
-        ? lengths[at] : layouts[at] == Layout.TABLE ? 5 : CONTAINER_HEADER_SLOTS;
+        ? lengths[at] : layouts[at] == Layout.TABLE ? 6 : CONTAINER_HEADER_SLOTS;
     for (int i = 0; i < count; i++) {
       long cell = Slot.address(base, i);
       if (Slot.isReference(memory, cell)) {

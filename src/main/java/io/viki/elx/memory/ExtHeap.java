@@ -25,11 +25,12 @@
 package io.viki.elx.memory;
 
 import io.viki.elx.Type;
-import io.viki.elx.lib.Args;
 import io.viki.elx.value.Metamethod;
+import io.viki.elx.vm.HostCalls;
+import io.viki.elx.vm.Slots;
+import io.viki.elx.vm.VM;
 import it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap;
 import org.jspecify.annotations.Nullable;
-import io.viki.elx.vm.VM;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,6 +49,7 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   private @Nullable VM vm;
   private long[] owners = new long[INITIAL_CAPACITY], members = new long[INITIAL_CAPACITY];
   private long serial;
+  private long finalizingPointer;
 
   /**
    * Creates an external heap sharing the internal heap's memory and arena.
@@ -78,7 +80,7 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param ptr ELX string pointer
    * @return decoded member name
    * @throws IllegalArgumentException if the pointer is not a string
-   * @throws IllegalStateException if the pointer is dead or the internal heap is closed
+   * @throws IllegalStateException    if the pointer is dead or the internal heap is closed
    */
   protected final String memberName(long ptr) {
     return internal.exportString(ptr);
@@ -121,11 +123,11 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    * reachable while it is retained. A field location cannot itself be used as
    * the owner of another field location.</p>
    *
-   * @param object external object handle
+   * @param object        external object handle
    * @param memberNamePtr ELX string pointer naming the member
    * @return negative field-location handle
    * @throws IllegalArgumentException if {@code object} is already a field handle
-   * @throws IllegalStateException if either handle is dead or this heap is closed
+   * @throws IllegalStateException    if either handle is dead or this heap is closed
    */
   public final long naddress(long object, long memberNamePtr) {
     int owner = entry(object);
@@ -146,11 +148,11 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Reads a host member or dereferences a field location.
    *
-   * @param ptr external object or field handle
+   * @param ptr           external object or field handle
    * @param memberNamePtr imported member-name string, or zero to dereference a field handle
-   * @param result destination slot
+   * @param result        destination slot
    * @throws IllegalArgumentException if a field handle is given a second member name
-   * @throws IllegalStateException if a handle is dead or the heap is closed
+   * @throws IllegalStateException    if a handle is dead or the heap is closed
    */
   public final void nget(long ptr, long memberNamePtr, long result) {
     int at = entry(ptr);
@@ -167,11 +169,11 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Writes a host member or dereferences a previously created field location.
    *
-   * @param ptr external object or field handle
+   * @param ptr           external object or field handle
    * @param memberNamePtr imported member-name string, or zero to dereference a field handle
-   * @param value source slot
+   * @param value         source slot
    * @throws IllegalArgumentException if a field handle is given a second member name
-   * @throws IllegalStateException if a handle is dead or the heap is closed
+   * @throws IllegalStateException    if a handle is dead or the heap is closed
    */
   public final void nset(long ptr, long memberNamePtr, long value) {
     int at = entry(ptr);
@@ -188,20 +190,20 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Invokes a host member callback using the VM slot-window ABI.
    *
-   * @param ptr external object or field handle
-   * @param memberNamePtr imported member-name string, or zero for a field handle
-   * @param args input slot window
-   * @param argCount number of input slots
-   * @param results output slot window
+   * @param ptr            external object or field handle
+   * @param memberNamePtr  imported member-name string, or zero for a field handle
+   * @param args           input slot window
+   * @param argCount       number of input slots
+   * @param results        output slot window
    * @param resultCapacity available output slots
    * @return number of values produced
    * @throws IllegalArgumentException if a field handle is given a second member name,
    *                                  or a window count is negative/out of range
-   * @throws IllegalStateException if a handle is dead, the provider exceeds the
-   *                               result capacity, or the heap is closed
+   * @throws IllegalStateException    if a handle is dead, the provider exceeds the
+   *                                  result capacity, or the heap is closed
    */
   public final int ncall(long ptr, long memberNamePtr, long args, int argCount, long results, int resultCapacity) {
-    if (argCount < 0 || resultCapacity < 0 || resultCapacity > 4) {
+    if (argCount < 0 || resultCapacity < 0 || resultCapacity > io.viki.elx.lib.Call.MAX_RESULTS) {
       throw new IllegalArgumentException("Invalid external call window");
     }
     int at = entry(ptr);
@@ -223,16 +225,20 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Reads a host member into an ELX slot.
    *
-   * @param target host object
+   * @param target        host object
    * @param memberNamePtr ELX string pointer naming the member
-   * @param result destination slot address
+   * @param result        destination slot address
    */
   protected void readField(Object target, long memberNamePtr, long result) {
     if (target instanceof HostAccess host) {
-      Args args = hostArgs(memberName(memberNamePtr), 0, 0, result, 1);
-      host.elx_handle(Metamethod.GET, args);
-      if (args.returnedCount() != 1) {
-        throw new IllegalStateException("Host member read must return exactly one value");
+      VM machine = machine();
+      try (Slots.Scope args = machine.borrowSlots(2)) {
+        args.set(0, Type.EXTERNAL, add(target));
+        args.set(1, Type.STRING, memberNamePtr);
+        int returned = HostCalls.dispatch(machine, host, Metamethod.GET, Slots.address(args, 0), 2, result, 1);
+        if (returned != 1) {
+          throw new IllegalStateException("Host member read must return exactly one value");
+        }
       }
       return;
     }
@@ -243,13 +249,19 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Writes an ELX slot into a host member.
    *
-   * @param target host object
+   * @param target        host object
    * @param memberNamePtr ELX string pointer naming the member
-   * @param value source slot address
+   * @param value         source slot address
    */
   protected void writeField(Object target, long memberNamePtr, long value) {
     if (target instanceof HostAccess host) {
-      host.elx_handle(Metamethod.SET, hostArgs(memberName(memberNamePtr), value, 1, 0, 0));
+      VM machine = machine();
+      try (Slots.Scope args = machine.borrowSlots(3)) {
+        args.set(0, Type.EXTERNAL, add(target));
+        args.set(1, Type.STRING, memberNamePtr);
+        Slot.copy(memory, Slots.address(args, 2), value, 1);
+        HostCalls.dispatch(machine, host, Metamethod.SET, Slots.address(args, 0), 3, 0, 0);
+      }
       return;
     }
     throw new UnsupportedOperationException("Host object does not implement HostAccess: "
@@ -259,20 +271,26 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Invokes a host member using raw slot windows.
    *
-   * @param target host object
-   * @param memberNamePtr ELX string pointer naming the member
-   * @param args argument-window base address
-   * @param argCount number of argument slots
-   * @param results result-window base address
+   * @param target         host object
+   * @param memberNamePtr  ELX string pointer naming the member
+   * @param args           argument-window base address
+   * @param argCount       number of argument slots
+   * @param results        result-window base address
    * @param resultCapacity result-window capacity
    * @return number of result slots written
    */
   protected int invoke(Object target, long memberNamePtr, long args, int argCount,
                        long results, int resultCapacity) {
     if (target instanceof HostAccess host) {
-      Args callback = hostArgs(memberName(memberNamePtr), args, argCount, results, resultCapacity);
-      host.elx_handle(Metamethod.CALL, callback);
-      return callback.returnedCount();
+      VM machine = machine();
+      // Member access first yields a callable; direct invocation has self only.
+      try (Slots.Scope window = machine.borrowSlots(argCount + 1)) {
+        window.set(0, Type.EXTERNAL, add(target));
+        if (argCount > 0) {
+          Slot.copy(memory, Slots.address(window, 1), args, argCount);
+        }
+        return HostCalls.dispatch(machine, host, Metamethod.CALL, Slots.address(window, 0), argCount + 1, results, resultCapacity);
+      }
     }
     throw new UnsupportedOperationException("Host object does not implement HostAccess: " + target.getClass().getName());
   }
@@ -280,20 +298,18 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
   /**
    * Dispatches a non-index metamethod on a host object.
    *
-   * @param ptr external object handle
-   * @param method metamethod requested by the VM
-   * @param args argument-window base address
-   * @param count number of input slots
-   * @param results result-window base address
+   * @param ptr      external object handle
+   * @param method   metamethod requested by the VM
+   * @param args     argument-window base address
+   * @param count    number of input slots
+   * @param results  result-window base address
    * @param capacity result-window capacity
    * @return number of values appended by the host callback
    */
   public final int nmeta(long ptr, Metamethod method, long args, int count, long results, int capacity) {
     Object target = object(entry(ptr));
     if (target instanceof HostAccess host) {
-      Args callback = hostArgs(null, args, count, results, capacity);
-      host.elx_handle(method, callback);
-      return callback.returnedCount();
+      return HostCalls.dispatch(machine(), host, method, args, count, results, capacity);
     }
     throw new UnsupportedOperationException("Host object does not implement HostAccess: "
         + target.getClass().getName());
@@ -311,12 +327,12 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
     this.vm = vm;
   }
 
-  private Args hostArgs(@Nullable String memberName, long inputs, int count, long outputs, int capacity) {
+  private VM machine() {
     VM machine = vm;
     if (machine == null) {
       throw new IllegalStateException("External heap is not attached to a VM");
     }
-    return Args.host(machine, memberName, inputs, count, outputs, capacity);
+    return machine;
   }
 
   /**
@@ -325,7 +341,7 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    * <p>Java object graphs are intentionally not scanned reflectively; a
    * provider must override this hook when its resource stores ELX handles.</p>
    *
-   * @param target host resource being traced
+   * @param target  host resource being traced
    * @param visitor callback for each retained ELX reference
    */
   protected void traceObject(Object target, HeapVisitor visitor) {
@@ -344,7 +360,11 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    */
   protected void disposeObject(Object target) {
     if (target instanceof HostAccess host) {
-      host.elx_handle(Metamethod.GC, hostArgs(null, 0, 0, 0, 0));
+      VM machine = machine();
+      try (Slots.Scope args = machine.borrowSlots(1)) {
+        args.set(0, Type.EXTERNAL, finalizingPointer);
+        HostCalls.dispatch(machine, host, Metamethod.GC, Slots.address(args, 0), 1, 0, 0);
+      }
     }
   }
 
@@ -373,7 +393,12 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
       Object object = object(index);
       identities.removeLong(object);
       if (!(object instanceof BoundCall)) {
-        disposeObject(object);
+        finalizingPointer = ptr;
+        try {
+          disposeObject(object);
+        } finally {
+          finalizingPointer = 0;
+        }
       }
     }
     objects.set(index, null);
@@ -437,13 +462,16 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    * @param address source slot
    * @return exported Java value, possibly {@code null}
    * @throws IllegalArgumentException if the slot contains an unsupported type
-   * @throws IllegalStateException if a referenced handle is dead
+   * @throws IllegalStateException    if a referenced handle is dead
    */
   public final @Nullable Object exportValue(long address) {
     Type type = Slot.type(memory, address);
     long bits = Slot.bits(memory, address);
     if (type == Type.PTR) {
       return bits;
+    }
+    if (type == Type.VOID) {
+      return io.viki.elx.VoidValue.INSTANCE;
     }
     if (type == Type.NULL) {
       return null;
@@ -478,11 +506,13 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
    * calls {@link #add(Object)}.
    *
    * @param destination destination slot
-   * @param value Java value, or {@code null}
+   * @param value       Java value, or {@code null}
    * @throws IllegalStateException if this heap or its internal heap is closed
    */
   public final void importJava(long destination, @Nullable Object value) {
-    if (value == null) {
+    if (value == io.viki.elx.VoidValue.INSTANCE) {
+      Slot.write(memory, destination, Type.VOID, 0);
+    } else if (value == null) {
       Slot.write(memory, destination, Type.NULL, 0);
     } else if (value instanceof Boolean b) {
       Slot.write(memory, destination, Type.BOOL, b ? 1 : 0);
@@ -511,10 +541,10 @@ public class ExtHeap extends ManagedHeap<@Nullable Object> {
     /**
      * Invokes the callback with raw argument/result slot addresses.
      *
-     * @param memory shared VM memory
-     * @param args input slot window
-     * @param count input slot count
-     * @param results output slot window
+     * @param memory   shared VM memory
+     * @param args     input slot window
+     * @param count    input slot count
+     * @param results  output slot window
      * @param capacity output capacity
      * @return number of values produced
      */

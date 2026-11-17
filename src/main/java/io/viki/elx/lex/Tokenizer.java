@@ -34,6 +34,8 @@ import io.viki.elx.SyntaxException;
  */
 public final class Tokenizer {
   private final String source;
+  private final boolean preserveNewlines;
+  private boolean inBlockComment;
   private int position, line = 1, column = 1;
 
   /**
@@ -43,10 +45,23 @@ public final class Tokenizer {
    */
   public Tokenizer(String source) {
     this.source = source;
+    preserveNewlines = false;
+  }
+
+  /**
+   * Creates a scanner with optional physical-line separator tokens.
+   *
+   * @param source           source text to scan
+   * @param preserveNewlines whether each physical line break is returned as {@link Token#SEP}
+   */
+  public Tokenizer(String source, boolean preserveNewlines) {
+    this.source = source;
+    this.preserveNewlines = preserveNewlines;
   }
 
   Tokenizer(String source, Token.Span start) {
     this.source = source;
+    preserveNewlines = false;
     position = start.start();
     line = start.line();
     column = start.column();
@@ -75,9 +90,9 @@ public final class Tokenizer {
       return span(Token.EOF, start, startLine, startColumn);
     }
     char c = source.charAt(position);
-    if (c == ';' || c == '\n' || c == '\r') {
+    if (c == ';' || preserveNewlines && (c == '\n' || c == '\r')) {
       advance();
-      if (c == '\r' && peek(0) == '\n') {
+      if (c == '\r' && position < source.length() && source.charAt(position) == '\n') {
         advance();
       }
       return span(Token.SEP, start, startLine, startColumn);
@@ -138,8 +153,25 @@ public final class Tokenizer {
 
   private void skip() {
     for (; ; ) {
-      while (position < source.length() && Character.isWhitespace(source.charAt(position)) && peek(0) != '\n' && peek(0) != '\r') {
+      while (position < source.length() && Character.isWhitespace(source.charAt(position))
+          && !(preserveNewlines && (peek(0) == '\n' || peek(0) == '\r'))) {
         advance();
+      }
+      if (inBlockComment) {
+        while (position < source.length() && !(preserveNewlines && (peek(0) == '\n' || peek(0) == '\r'))
+            && !(peek(0) == '*' && peek(1) == '/')) {
+          advance();
+        }
+        if (position < source.length() && peek(0) == '*' && peek(1) == '/') {
+          advance();
+          advance();
+          inBlockComment = false;
+          continue;
+        }
+        if (position == source.length()) {
+          throw new SyntaxException("Unterminated block comment", span(Token.ERROR, position, line, column));
+        }
+        return;
       }
       if (peek(0) == '\\' && (peek(1) == '\n' || peek(1) == '\r')) {
         advance();
@@ -155,14 +187,20 @@ public final class Tokenizer {
       } else if (peek(0) == '/' && peek(1) == '*') {
         int start = position, startLine = line, startColumn = column;
         advance();
-        do {
+        advance();
+        inBlockComment = true;
+        while (position < source.length() && !(peek(0) == '*' && peek(1) == '/')) {
+          if (preserveNewlines && (peek(0) == '\n' || peek(0) == '\r')) {
+            return;
+          }
           advance();
-        } while (position < source.length() && !(peek(0) == '*' && peek(1) == '/'));
+        }
         if (position == source.length()) {
           throw new SyntaxException("Unterminated block comment", span(Token.ERROR, start, startLine, startColumn));
         }
         advance();
         advance();
+        inBlockComment = false;
       } else {
         return;
       }

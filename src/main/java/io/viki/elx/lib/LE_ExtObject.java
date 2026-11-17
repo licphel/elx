@@ -26,7 +26,7 @@ package io.viki.elx.lib;
 
 /**
  * Library entry backed by a host callback. The callback is bound to a VM when
- * the library is linked and receives a borrowed {@link Args} window per call.
+ * the library is linked and receives a borrowed {@link Call} window per call.
  *
  * @param function callback implementation
  */

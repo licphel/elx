@@ -36,6 +36,8 @@ package io.viki.elx;
 public enum Type {
   /** Invalid or unavailable type used to mark an unsupported operation. */
   INVALID("invalid", 0, Family.NONE),
+  /** Missing/default value, distinct from an explicit null. */
+  VOID("void", 0, Family.NONE),
   /** Null reference value with no payload width. */
   NULL("null", 0, Family.NONE),
   /** Boolean value stored as a one-bit unsigned integer. */
@@ -123,7 +125,7 @@ public enum Type {
   /**
    * Selects the common numeric type for a binary operation.
    *
-   * @param left left operand type
+   * @param left  left operand type
    * @param right right operand type
    * @return widened result type
    * @throws IllegalArgumentException if either operand is non-numeric
@@ -191,12 +193,15 @@ public enum Type {
    *
    * @param bits raw payload bits
    * @param from source type owning {@code bits}
-   * @param to target numeric type
+   * @param to   target numeric type
    * @return payload bits encoded for {@code to}
    * @throws IllegalArgumentException if the conversion is not numeric
-   * @throws ArithmeticException if a nonfinite floating value is converted to an integer
+   * @throws ArithmeticException      if a nonfinite floating value is converted to an integer
    */
   public static long cast(long bits, Type from, Type to) {
+    if (from == VOID && to.numeric()) {
+      return 0;
+    }
     if (!from.numeric() || !to.numeric()) {
       throw new IllegalArgumentException("No numeric cast from " + from.displayName() + " to " + to.displayName());
     }

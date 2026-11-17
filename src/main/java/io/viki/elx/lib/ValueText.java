@@ -57,6 +57,9 @@ public final class ValueText {
       }
       return new String(data, StandardCharsets.UTF_8);
     }
+    if (type == Type.VOID) {
+      return "void";
+    }
     if (type == Type.NULL) {
       return "null";
     }
