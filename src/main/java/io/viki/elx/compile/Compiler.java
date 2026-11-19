@@ -621,6 +621,16 @@ public final class Compiler {
           next = locals;
           return true;
         }
+        case AT -> {
+          // Reserve the declaration's local slot before saving decorator values.
+          // A subsequent local function must not overwrite its own decorator.
+          next = Math.max(next, locals + 1);
+          List<Decorator> decorators = decorators();
+          boolean local = lexer.match(Token.LOCAL);
+          lexer.require(Token.FUNCTION);
+          namedFunction(local, decorators);
+          nestedTerminator = true;
+        }
         case LOCAL -> {
           lexer.advance();
           if (lexer.match(Token.FUNCTION)) {
@@ -774,7 +784,7 @@ public final class Compiler {
       code.constant(at, code.symbol(symbol));
       Expr function = new Expr(at, Type.FUNCTION);
       if (kind() == Token.LEFT_PAREN) {
-        call(function, null, true);
+        call(function, null);
         return;
       }
       List<Expr> values = new ArrayList<>();
@@ -785,7 +795,7 @@ public final class Compiler {
         names.add("");
         kinds.add(CallSite.ArgumentKind.POSITIONAL);
       } while (lexer.match(Token.COMMA));
-      callWithArguments(function, new Arguments(values, names, kinds), true);
+      callWithArguments(function, new Arguments(values, names, kinds));
     }
 
     private @Nullable Symbol librarySymbol(String name) {
@@ -899,13 +909,18 @@ public final class Compiler {
       List<Token.Span> names = names(true);
       Expr initial;
       if (lexer.match(Token.EQUAL)) {
-        if (!header && names.size() == 1 && kind() == Token.FUNCTION) {
+        if (!header && names.size() == 1 && (kind() == Token.FUNCTION || kind() == Token.AT)) {
           String text = lexer.text(names.get(0));
+          List<Decorator> decorators = List.of();
+          if (kind() == Token.AT) {
+            next = Math.max(next, locals + 1);
+            decorators = decorators();
+          }
           int at = local(1);
           Binding binding = new Binding(at, -1, 1, false);
           scope.names.put(text, binding);
-          lexer.advance();
-          Expr function = function(text);
+          lexer.require(Token.FUNCTION);
+          Expr function = decorate(function(text), decorators);
           write(new Target(binding, -1, -1), function);
           next = locals;
           return;
@@ -936,7 +951,56 @@ public final class Compiler {
       next = locals;
     }
 
+    private record Decorator(Expr function, Arguments arguments, int line) {}
+
+    private List<Decorator> decorators() {
+      List<Decorator> result = new ArrayList<>();
+      while (kind() == Token.AT) {
+        Token.Span opening = lexer.advance();
+        int line = opening.line();
+        if (kind() != Token.IDENTIFIER && kind() != Token.ENV)
+          throw lexer.error("Expected a decorator function name after '@'", opening);
+        Expr wrapper = scalar(primary());
+        while (kind() == Token.DOT || kind() == Token.LEFT_BRACKET) {
+          Expr key;
+          if (lexer.match(Token.DOT)) key = string(lexer.text(memberName()));
+          else {
+            lexer.require(Token.LEFT_BRACKET);
+            key = scalar(expression());
+            lexer.require(Token.RIGHT_BRACKET);
+          }
+          wrapper = scalar(new Expr(-1, Type.INVALID, 1, false,
+              new Target(null, wrapper.register(), key.register()), 1));
+        }
+        Arguments arguments = kind() == Token.LEFT_PAREN ? arguments(null)
+            : new Arguments(List.of(), List.of(), List.of());
+        result.add(new Decorator(wrapper, arguments, line));
+        while (lexer.match(Token.SEP)) { }
+      }
+      return result;
+    }
+
+    private Expr decorate(Expr function, List<Decorator> decorators) {
+      for (int i = decorators.size() - 1; i >= 0; i--) {
+        Decorator decorator = decorators.get(i);
+        Arguments extra = decorator.arguments();
+        List<Expr> values = new ArrayList<>(extra.values().size() + 1);
+        List<String> names = new ArrayList<>(extra.names().size() + 1);
+        List<CallSite.ArgumentKind> kinds = new ArrayList<>(extra.kinds().size() + 1);
+        values.add(function); names.add(""); kinds.add(CallSite.ArgumentKind.POSITIONAL);
+        values.addAll(extra.values()); names.addAll(extra.names()); kinds.addAll(extra.kinds());
+        if (values.size() > 255) throw lexer.error("Decorator accepts at most 254 explicit arguments");
+        code.line(decorator.line());
+        function = callWithArguments(decorator.function(), new Arguments(values, names, kinds));
+      }
+      return function;
+    }
+
     private void namedFunction(boolean local) {
+      namedFunction(local, List.of());
+    }
+
+    private void namedFunction(boolean local, List<Decorator> decorators) {
       Token.Span name = lexer.require(Token.IDENTIFIER);
       String text = lexer.text(name);
       if (kind() == Token.DOT || kind() == Token.COLON) {
@@ -946,7 +1010,7 @@ public final class Compiler {
         boolean method = lexer.advance().kind() == Token.COLON;
         Token.Span member = memberName();
         Expr table = nameValue(name), key = string(lexer.text(member));
-        Expr function = function(lexer.text(member), method);
+        Expr function = decorate(function(lexer.text(member), method), decorators);
         write(new Target(null, table.register(), key.register()), function);
         return;
       }
@@ -959,7 +1023,7 @@ public final class Compiler {
         binding = new Binding(at, -1, 1, false);
         scope.names.put(text, binding);
       }
-      Expr function = function(text);
+      Expr function = decorate(function(text), decorators);
       if (binding != null) {
         write(new Target(binding, -1, -1), function);
       } else {
@@ -1444,10 +1508,12 @@ public final class Compiler {
             throw lexer.error("The standard print library function is unavailable");
           }
           Expr function = libraryFunction(symbol);
-          if (symbol.definition() instanceof LE_ExtObject && kind() == Token.LEFT_PAREN) {
-            return call(function, null, true);
-          }
           return function;
+        }
+        case AT -> {
+          List<Decorator> decorators = decorators();
+          lexer.require(Token.FUNCTION);
+          return decorate(function(null), decorators);
         }
         case FUNCTION -> {
           lexer.advance();
@@ -1509,9 +1575,6 @@ public final class Compiler {
             code.constant(at, constantIndex);
             LibraryEntry entry = symbol.definition();
             Type type = entry instanceof LE_Bits constant ? constant.type() : entry instanceof LE_String ? Type.STRING : Type.FUNCTION;
-            if (entry instanceof LE_ExtObject && kind() == Token.LEFT_PAREN) {
-              return call(new Expr(at, Type.FUNCTION), null, true);
-            }
             return type == Type.FUNCTION
                 ? new Expr(at, type, 1, false, new Target(null, -4, constantIndex), 1)
                 : new Expr(at, type);
@@ -1563,9 +1626,9 @@ public final class Compiler {
           Expr key = string(lexer.text(field));
           int method = temporary();
           code.r(Op.GETTABLE, method, base.register(), key.register());
-          base = call(new Expr(method, Type.INVALID), base, false);
+          base = call(new Expr(method, Type.INVALID), base);
         } else if (kind() == Token.LEFT_PAREN) {
-          base = call(scalar(base), null, false);
+          base = call(scalar(base), null);
         } else if (kind() == Token.INCREMENT || kind() == Token.DECREMENT) {
           base = change(base, lexer.advance().kind(), true);
         } else {
@@ -1731,12 +1794,12 @@ public final class Compiler {
       return new Arguments(args, names, kinds);
     }
 
-    private Expr call(Expr function, @Nullable Expr receiver, boolean external) {
+    private Expr call(Expr function, @Nullable Expr receiver) {
       Arguments arguments = arguments(receiver);
-      return callWithArguments(function, arguments, external);
+      return callWithArguments(function, arguments);
     }
 
-    private Expr callWithArguments(Expr function, Arguments arguments, boolean external) {
+    private Expr callWithArguments(Expr function, Arguments arguments) {
       List<Expr> parts = arguments.values();
       boolean named = arguments.kinds().stream().anyMatch(kind -> kind == CallSite.ArgumentKind.NAMED || kind == CallSite.ArgumentKind.TABLE_SPREAD);
       if (named) {

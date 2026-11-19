@@ -16,6 +16,9 @@ public final class OptimizationTests {
   public static void main(String[] args){run();}
   public static void run(){
     List<String> programs=new ArrayList<>(List.of(
+      "local t={};setmetatable(t,{get=function(self,k){return type(k)}});return t[1],t[1l],t[true]",
+      "local state={keys=''};local t={};setmetatable(t,{set=function(self,k,v){state.keys+=type(k);setrawattr(self,k,v)}});t[0]=1;t[1l]=2;return state.keys,t[0],t[1l]",
+      "local xs=[1,2];xs[0]=xs[1];xs[2]=3;return xs[0],xs[1],xs[2]",
       "local function less(a,b) { if a<b { return 1 } else { return 2 } }; return less(1,2),less(2,1),less(0.0/0.0,1.0),less(1.0,0.0/0.0)",
       "local count=0;local t={};setmetatable(t,{['lt']=function(a,b) { count+=1;return true }});local function less(a,b) { if a<b { return 1 } else { return 2 } }; return less(t,2),count",
       "local n=0;local function f(a,b) { if a==b { n+=1 } if a!=b { n+=2 } return n }; return f(2,2),f(2,3)",
@@ -90,6 +93,8 @@ public final class OptimizationTests {
     var constants=Optimizer.optimize(COMPILER.compileRaw("constant-shape","function f(x) {return x+3,x-2 }; return f(7)",Library.EMPTY));
     check(has(constants,Op.GETGLOBAL),"global key lookup not fused");
     check(has(constants,Op.ADDK)&&has(constants,Op.SUBK),"dynamic constant arithmetic not fused");
+    var indexed=Optimizer.optimize(COMPILER.compileRaw("index-shape","local xs=[1];xs[0]=2;return xs[0]",Library.EMPTY));
+    check(has(indexed,Op.GETI)&&has(indexed,Op.SETI),"integer index operations were not specialized");
     System.out.println("ELX raw/O1: "+checks+" equivalence/shape checks passed");
   }
   private static boolean has(Prototype image,Op expected) {

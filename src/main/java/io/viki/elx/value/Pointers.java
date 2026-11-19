@@ -108,7 +108,7 @@ public final class Pointers {
    */
   public static long global(ElxHeap heap, long globals, long key) {
     Memory memory = heap.memory();
-    if (ElxTable.own(memory, globals, key) == 0) {
+    if (ElxTable.own(heap, globals, key) == 0) {
       long empty = heap.arena().allocate(Slot.SIZE);
       try {
         Slot.write(memory, empty, Type.NULL, 0);
@@ -180,7 +180,7 @@ public final class Pointers {
       throw new IllegalStateException("Pointer to a returned local frame");
     }
     if (kind == GLOBAL) {
-      long target = ElxTable.own(memory, owner, key);
+      long target = ElxTable.own(heap, owner, key);
       if (target == 0) {
         throw new IllegalStateException("Pointer to a removed global");
       }
@@ -189,7 +189,7 @@ public final class Pointers {
     if (kind == INDEX) {
       Type ownerType = Slot.type(memory, Slot.address(pointer, OWNER));
       if (ownerType == Type.TABLE) {
-        long target = ElxTable.own(memory, owner, key);
+        long target = ElxTable.own(heap, owner, key);
         if (target == 0) {
           throw new IllegalStateException("Pointer to a removed table entry");
         }

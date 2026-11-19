@@ -229,7 +229,11 @@ public final class ElxHeap extends ManagedHeap<Long> {
 
   @Override
   protected void dispose(int index, long ptr) {
-    strings.invalidate();
+    if (layouts[index] == Layout.STRING) {
+      strings.invalidate(ptr);
+    } else if (layouts[index] == Layout.IMAGE) {
+      strings.invalidateImage();
+    }
     arena.free(ptr);
     layouts[index] = Layout.BYTES;
     lengths[index] = 0;

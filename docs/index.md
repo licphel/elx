@@ -238,6 +238,27 @@ A function expression has the form `function(parameters) { body }`. Evaluating i
 
 A call `receiver:method(arguments)` passes the receiver as the first argument. A dot call passes only the written arguments. The table must already exist when its function declaration executes.
 
+### Decorators
+
+A decorator wraps a function when its definition executes. `@wrap(2, mode='fast')` before a function declaration calls `wrap(originalFunction, 2, mode='fast')` and stores its first result in the declared binding. `@wrap` and `@wrap()` both pass only the original function. The wrapper's first actual argument is always the function being decorated.
+
+Decorators use ordinary call binding. They support optional and variadic parameters, named arguments, `*values` list expansion, and `**options` named expansion. The implicit function argument comes before the explicit arguments. Positional arguments precede named arguments, and normal duplicate/missing-parameter checks apply. Wrapper names can select members, such as `@decorators.trace` or `@decorators['trace']`.
+
+Decorator expressions and their arguments are evaluated once, from top to bottom. Wrapping then proceeds from bottom to top: `@outer @inner function f() { ... }` assigns `outer(inner(originalFunction))` to `f`. Calls to `f` execute the resulting wrapper. The original function keeps its usual self binding for recursion.
+
+Decorators work on local and global declarations, table functions, methods, and function expressions:
+
+```
+local function addResult(fn, amount=1) {
+  return function(x) { return fn(x) + amount }
+}
+@addResult(amount=3)
+local function twice(x) { return x * 2 }
+assert(twice(4) == 11)
+```
+
+The expression form is `local f = @wrap(arguments) function(parameters) { body }`. A decorated method still receives `self` when called with the colon syntax. Decorators use the regular function-call bytecode, so an identity decorator adds no per-call dispatch to the original function.
+
 ### Parameters and defaults
 
 Parameters become local bindings for the invocation. Each optional parameter has a default expression evaluated on calls where that argument is absent. An explicitly supplied `null` counts as a supplied argument, while omitted or unspecified values use `void`.
@@ -432,6 +453,8 @@ method      ::= 'function' name ('.' | ':') name '(' parameters ')' block
 local       ::= 'local' names [ '=' expressions ]
 native-declaration ::= 'native' 'function' qualified-name '(' parameters ')' [ '->' type ]
                      | 'native' qualified-name [ ':' type ]
+decorator   ::= '@' qualified-name [ '(' arguments ')' ]
+decorated   ::= decorator { decorator } [ 'local' ] function-declaration
 call        ::= expression '(' arguments ')'
 ```
 

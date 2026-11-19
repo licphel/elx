@@ -61,6 +61,7 @@ public enum Token {
   COLON(":", true),
   ARROW("->", true),
   QUESTION("?", true),
+  AT("@", true),
   SEP("<separator>", false),
   PLUS("+", true),
   INCREMENT("++", true),

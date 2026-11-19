@@ -34,6 +34,10 @@ final class Operations implements ValueOperations {
     if (RawValues.numericOperator(op, memory, out, left, right)) {
       return;
     }
+    executeSlow(op, out, left, right, relation);
+  }
+
+  private void executeSlow(Op op, long out, long left, long right, int relation) {
     Type a = Slot.type(memory, left), b = Slot.type(memory, right);
     boolean unary = op == Op.NEG || op == Op.POS || op == Op.BNOT || op == Op.NOT || op == Op.INC || op == Op.DEC;
     if (!(a.numeric() && (unary || b.numeric())) && vm.operatorHook(op, relation, out, left, right)) {

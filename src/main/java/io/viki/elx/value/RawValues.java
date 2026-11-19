@@ -60,6 +60,15 @@ public final class RawValues {
 
   // 2 denotes unordered, and is handled before applying a relation.
   private static int numericCompare(Type left, long x, Type right, long y) {
+    if (left == right && left.integer()) {
+      x = Type.normalize(x, left);
+      y = Type.normalize(y, right);
+      return left == Type.ULONG ? Long.compareUnsigned(x, y) : Long.compare(x, y);
+    }
+    return numericCompareMixed(left, x, right, y);
+  }
+
+  private static int numericCompareMixed(Type left, long x, Type right, long y) {
     if (left.integer() && right.integer()) {
       x = Type.normalize(x, left);
       y = Type.normalize(y, right);
@@ -126,7 +135,7 @@ public final class RawValues {
    * Returns a deterministic hash for the value stored in one slot.
    *
    * <p>Numeric values use a common representation so equal integer and floating
-   * values hash alike; lists and tables use identity-style hashes because their
+   * values hash alike; lists and tables use constant category hashes because their
    * contents are mutable.</p>
    *
    * @param memory memory containing the value slot
@@ -137,13 +146,28 @@ public final class RawValues {
     return RawValues.hash(memory, Slot.type(memory, value), Slot.bits(memory, value));
   }
 
+  public static long hash(ElxHeap heap, long value) {
+    Memory memory = heap.memory();
+    Type type = Slot.type(memory, value);
+    long bits = Slot.bits(memory, value);
+    return type == Type.STRING ? heap.strings().hash(bits) : hash(memory, type, bits);
+  }
+
   private static long hash(Memory memory, Type type, long bits) {
     if (type == Type.NULL) {
       return RawValues.mix(Type.NULL.ordinal());
     }
     if (type.numeric()) {
+      if (type.integer()) {
+        return mix(Type.normalize(bits, type));
+      }
       double number = Type.asDouble(bits, type);
-      return RawValues.mix(number == 0 ? 0 : Double.doubleToLongBits(number));
+      // Canonicalize exactly integral floats without rounding integer keys through double.
+      if (number >= -0x1p63 && number < 0x1p64 && number == Math.rint(number)) {
+        long integer = number >= 0x1p63 ? ((long) (number - 0x1p63)) | Long.MIN_VALUE : (long) number;
+        return mix(integer);
+      }
+      return mix(Double.doubleToLongBits(number));
     }
     if (type == Type.STRING) {
       int length = memory.load32(bits);
@@ -275,45 +299,63 @@ public final class RawValues {
       return true;
     }
     if (kind.integer()) {
-      x = Type.normalize(x, kind);
-      y = Type.normalize(y, kind);
-      long value;
-      switch (op) {
-        case ADD -> value = x + y;
-        case SUB -> value = x - y;
-        case MUL -> value = x * y;
-        case DIV -> {
-          // Allocate the language error explicitly: HotSpot fast-throw exceptions
-          // may disable suppressed traces after this instruction becomes hot.
-          if (y == 0) {
-            throw new ArithmeticException("/ by zero");
-          }
-          value = kind.unsigned() ? Long.divideUnsigned(x, y) : x / y;
-        }
-        case MOD -> {
-          if (y == 0) {
-            throw new ArithmeticException("/ by zero");
-          }
-          value = kind.unsigned() ? Long.remainderUnsigned(x, y) : x % y;
-        }
-        case BAND -> value = x & y;
-        case BOR -> value = x | y;
-        case BXOR -> value = x ^ y;
-        case SHL -> value = x << ((int) y & (kind.width() - 1));
-        case SHR -> value = x >> ((int) y & (kind.width() - 1));
-        case USHR ->
-            value = (kind.width() == 64 ? x : x & ((1L << kind.width()) - 1)) >>> ((int) y & (kind.width() - 1));
-        case NEG -> value = -x;
-        case BNOT -> value = ~x;
-        case INC -> value = x + 1;
-        case DEC -> value = x - 1;
-        default -> {
-          return false;
-        }
-      }
-      Slot.write(memory, result, kind, Type.normalize(value, kind));
-      return true;
+      return integerOperator(op, memory, result, kind, x, y);
     }
+    return floatingOperator(op, memory, result, kind, x, y);
+  }
+
+  private static boolean integerOperator(Op op, Memory memory, long result, Type kind, long x, long y) {
+    x = Type.normalize(x, kind);
+    y = Type.normalize(y, kind);
+    // Keep the common arithmetic path small enough for HotSpot to inline.
+    long value;
+    switch (op) {
+      case ADD -> value = x + y;
+      case SUB -> value = x - y;
+      case MUL -> value = x * y;
+      default -> { return integerOperatorSlow(op, memory, result, kind, x, y); }
+    }
+    Slot.write(memory, result, kind, Type.normalize(value, kind));
+    return true;
+  }
+
+  private static boolean integerOperatorSlow(Op op, Memory memory, long result, Type kind, long x, long y) {
+    long value;
+    switch (op) {
+      case DIV -> {
+        // Allocate the language error explicitly: HotSpot fast-throw exceptions
+        // may disable suppressed traces after this instruction becomes hot.
+        if (y == 0) {
+          throw new ArithmeticException("/ by zero");
+        }
+        value = kind.unsigned() ? Long.divideUnsigned(x, y) : x / y;
+      }
+      case MOD -> {
+        if (y == 0) {
+          throw new ArithmeticException("/ by zero");
+        }
+        value = kind.unsigned() ? Long.remainderUnsigned(x, y) : x % y;
+      }
+      case BAND -> value = x & y;
+      case BOR -> value = x | y;
+      case BXOR -> value = x ^ y;
+      case SHL -> value = x << ((int) y & (kind.width() - 1));
+      case SHR -> value = x >> ((int) y & (kind.width() - 1));
+      case USHR ->
+          value = (kind.width() == 64 ? x : x & ((1L << kind.width()) - 1)) >>> ((int) y & (kind.width() - 1));
+      case NEG -> value = -x;
+      case BNOT -> value = ~x;
+      case INC -> value = x + 1;
+      case DEC -> value = x - 1;
+      default -> {
+        return false;
+      }
+    }
+    Slot.write(memory, result, kind, Type.normalize(value, kind));
+    return true;
+  }
+
+  private static boolean floatingOperator(Op op, Memory memory, long result, Type kind, long x, long y) {
     // Unary negation flips only the sign bit, preserving NaN payloads and signed zero.
     if (op == Op.NEG) {
       Slot.write(memory, result, kind, x ^ (kind == Type.FLOAT ? 0x80000000L : Long.MIN_VALUE));
@@ -644,13 +686,22 @@ public final class RawValues {
   /**
    * Reads a table entry or list element into a result slot.
    *
-   * @param memory memory containing source and destination slots
+   * @param heap   heap containing source and destination slots
    * @param target list or table value slot
    * @param key    index/key slot
    * @param result destination slot
    * @throws IllegalArgumentException  if the target is not indexable
    * @throws IndexOutOfBoundsException if a list index is invalid
    */
+  public static void getIndex(ElxHeap heap, long target, long key, long result) {
+    Memory memory = heap.memory();
+    if (Slot.type(memory, target) == Type.TABLE) {
+      ElxTable.get(heap, Slot.bits(memory, target), key, result);
+    } else {
+      getIndex(memory, target, key, result);
+    }
+  }
+
   public static void getIndex(Memory memory, long target, long key, long result) {
     Type type = Slot.type(memory, target);
     long pointer = Slot.bits(memory, target);

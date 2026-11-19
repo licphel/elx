@@ -14,9 +14,15 @@ final class Utf8StringStore implements StringStore {
     this.memory = heap.memory();
   }
 
-  void invalidate() {
+  void invalidateImage() {
+    // Linked images contain strings at interior addresses.
     lengths.clear();
     hashes.clear();
+  }
+
+  void invalidate(long string) {
+    lengths.remove(string);
+    hashes.remove(string);
   }
 
   @Override

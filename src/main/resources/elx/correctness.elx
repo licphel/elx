@@ -523,3 +523,10 @@ local function iteratable() {
 for i in iteratable {
     print i;
 }
+
+// named varadic
+function vararg(a, b...) {
+    print(type(b))
+}
+
+vararg(1,1,2,3)

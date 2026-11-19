@@ -22,6 +22,8 @@ public final class VmTests {
     NativeBindingTests.run();
     VoidConversionTests.run();
     CallWindowTests.run();
+    DecoratorTests.run();
+    io.viki.elx.HashTests.run();
     exercise(new JavaMemory(32));exercise(new NativeMemory(32));
     SimpleBenchTests.run();
     System.out.println("ELX O1 VM: "+checks+" checks passed");

@@ -154,10 +154,8 @@ public final class VM implements AutoCloseable {
     if (count < 0) {
       throw new IllegalArgumentException("Negative scratch size: " + count);
     }
+    // Owned register windows are already initialized by JavaRegs.enter.
     long base = regs.enter(Math.max(1, count));
-    for (int i = 0; i < count; i++) {
-      Slot.write(memory, Slot.address(base, i), Type.VOID, 0);
-    }
     return new Slots.Scope(this, base, count);
   }
 
@@ -345,7 +343,7 @@ public final class VM implements AutoCloseable {
     long key = heap.importString(name), scratch = arena.allocate(Slot.SIZE);
     try {
       Slot.write(memory, scratch, Type.STRING, key);
-      ElxTable.get(memory, globals, scratch, result);
+      ElxTable.get(heap, globals, scratch, result);
     } finally {
       arena.free(scratch);
     }
@@ -835,17 +833,22 @@ public final class VM implements AutoCloseable {
         case GETFIELD -> readIndex(a, b, Slot.address(linker.constants(id), extension));
         case SETFIELD -> writeIndex(a, Slot.address(linker.constants(id), extension), b);
         case GETI, SETI -> {
-          try (Slots.Scope key = borrowSlots(1)) {
-            key.setInt(0, Instr.c(word));
-            if (op == Op.GETI) {
-              readIndex(a, b, Slots.address(key, 0));
-            } else {
-              writeIndex(a, Slots.address(key, 0), b);
+          int index = Instr.c(word);
+          long target = op == Op.GETI ? b : a;
+          if (Slot.type(memory, target) == Type.LIST) {
+            long list = Slot.bits(memory, target);
+            if (op == Op.GETI) ElxList.get(memory, list, index, a);
+            else ElxList.set(heap, list, index, b);
+          } else {
+            try (Slots.Scope key = borrowSlots(1)) {
+              key.setInt(0, index);
+              if (op == Op.GETI) readIndex(a, b, Slots.address(key, 0));
+              else writeIndex(a, Slots.address(key, 0), b);
+              completeRuntimeHook(depth);
             }
-            completeRuntimeHook(depth);
           }
         }
-        case RAWGET -> RawValues.getIndex(memory, b, c, a);
+        case RAWGET -> RawValues.getIndex(heap, b, c, a);
         case RAWSET -> RawValues.setIndex(heap, a, b, c);
         case APPEND -> ElxList.append(heap, Slot.bits(memory, a), b);
         case ADD, SUB, MUL, DIV, MOD, BAND, BOR, BXOR, SHL, SHR, USHR -> operations.execute(op, a, b, c, 0);
@@ -1366,6 +1369,10 @@ public final class VM implements AutoCloseable {
       external.nget(Slot.bits(memory, target), Slot.bits(memory, key), result);
       return;
     }
+    if (type == Type.LIST) {
+      ElxList.get(memory, Slot.bits(memory, target), RawValues.index(memory, key), result);
+      return;
+    }
     if (type == Type.TABLE) {
       readTableIndex(result, Slot.bits(memory, target), key);
       return;
@@ -1376,7 +1383,7 @@ public final class VM implements AutoCloseable {
   private void readTableIndex(long result, long table, long key) {
     long hook = ElxTable.hook(memory, table, Metamethod.GET.ordinal());
     if (hook == 0) {
-      ElxTable.get(memory, table, key, result);
+      ElxTable.get(heap, table, key, result);
       return;
     }
     try (Slots.Scope args = borrowSlots(2)) {
@@ -1394,6 +1401,10 @@ public final class VM implements AutoCloseable {
     if (type == Type.EXTERNAL) {
       safePoint();
       external.nset(Slot.bits(memory, target), Slot.bits(memory, key), value);
+      return;
+    }
+    if (type == Type.LIST) {
+      ElxList.set(heap, Slot.bits(memory, target), RawValues.index(memory, key), value);
       return;
     }
     long hook = type == Type.TABLE ? ElxTable.hook(memory, Slot.bits(memory, target), Metamethod.SET.ordinal()) : 0;

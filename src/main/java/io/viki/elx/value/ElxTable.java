@@ -189,8 +189,16 @@ public final class ElxTable {
    * @return value slot address, or zero for an absent key
    */
   public static long own(Memory memory, long table, long key) {
+    return own(memory, table, key, RawValues.hash(memory, key));
+  }
+
+  public static long own(ElxHeap heap, long table, long key) {
+    return own(heap.memory(), table, key, RawValues.hash(heap, key));
+  }
+
+  private static long own(Memory memory, long table, long key, long hash) {
     long data = ElxTable.data(memory, table);
-    int index = ElxTable.find(memory, data, ElxTable.capacity(memory, table), key);
+    int index = find(memory, data, capacity(memory, table), key, hash);
     long at = Slot.address(data, index * 2);
     return Slot.type(memory, at) == Type.INVALID ? 0 : at + Slot.SIZE;
   }
@@ -204,13 +212,18 @@ public final class ElxTable {
    * @param result destination slot
    */
   public static void get(Memory memory, long table, long key, long result) {
-    long data = ElxTable.data(memory, table);
-    int index = ElxTable.find(memory, data, ElxTable.capacity(memory, table), key);
-    long at = Slot.address(data, index * 2);
-    if (Slot.type(memory, at) == Type.INVALID) {
+    get(memory, own(memory, table, key), result);
+  }
+
+  public static void get(ElxHeap heap, long table, long key, long result) {
+    get(heap.memory(), own(heap, table, key), result);
+  }
+
+  private static void get(Memory memory, long value, long result) {
+    if (value == 0) {
       Slot.write(memory, result, Type.VOID, 0);
     } else {
-      Slot.copy(memory, result, at + Slot.SIZE, 1);
+      Slot.copy(memory, result, value, 1);
     }
   }
 
@@ -286,7 +299,8 @@ public final class ElxTable {
     }
     int capacity = ElxTable.capacity(memory, table);
     long data = ElxTable.data(memory, table);
-    int index = ElxTable.find(memory, data, capacity, key);
+    long hash = RawValues.hash(heap, key);
+    int index = find(memory, data, capacity, key, hash);
     boolean fresh = Slot.type(memory, Slot.address(data, index * 2)) == Type.INVALID;
     if (fresh) {
       modified(memory, table);
@@ -303,14 +317,14 @@ public final class ElxTable {
         if (oldType == Type.INVALID) {
           continue;
         }
-        int at = ElxTable.find(memory, replacement, next, old);
+        int at = find(memory, replacement, next, old, RawValues.hash(heap, old));
         Slot.copy(memory, Slot.address(replacement, at * 2), old, 2);
       }
       data = replacement;
       capacity = next;
       Slot.write(memory, Slot.address(table, DATA), Type.PTR, data);
       Slot.write(memory, Slot.address(table, CAPACITY), Type.INT, capacity);
-      index = ElxTable.find(memory, data, capacity, key);
+      index = find(memory, data, capacity, key, hash);
     }
     long at = Slot.address(data, index * 2);
     // Read operands before writing: result/operands may alias in hand-written programs.
@@ -364,7 +378,11 @@ public final class ElxTable {
   }
 
   private static int find(Memory memory, long data, int capacity, long key) {
-    int index = (int) RawValues.hash(memory, key) & (capacity - 1);
+    return find(memory, data, capacity, key, RawValues.hash(memory, key));
+  }
+
+  private static int find(Memory memory, long data, int capacity, long key, long hash) {
+    int index = (int) hash & (capacity - 1);
     for (; ; ) {
       long probe = Slot.address(data, index * 2);
       if (Slot.type(memory, probe) == Type.INVALID || RawValues.equal(memory, probe, key)) {

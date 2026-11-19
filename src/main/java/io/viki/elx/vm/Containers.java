@@ -89,7 +89,7 @@ final class Containers implements ContOp {
     same(keys);
     same(out);
     long table = container(values, index, Type.TABLE);
-    long value = ElxTable.own(memory, table, Slots.address(keys, key));
+    long value = ElxTable.own(vm.heap(), table, Slots.address(keys, key));
     if (value == 0) {
       out.setVoid(at);
     } else {
@@ -101,7 +101,7 @@ final class Containers implements ContOp {
   @Override
   public boolean tableContains(Span values, int index, Span keys, int key) {
     same(keys);
-    return ElxTable.own(memory, container(values, index, Type.TABLE), Slots.address(keys, key)) != 0;
+    return ElxTable.own(vm.heap(), container(values, index, Type.TABLE), Slots.address(keys, key)) != 0;
   }
 
   @Override

@@ -62,8 +62,15 @@ public final class Optimizer {
           && !flow.addressed.get(c)) {
         Op fused = op == Op.ADD ? Op.ADDK : op == Op.SUB ? Op.SUBK : Op.GETFIELD;
         if (known < 0) {
-          n.words = new int[] {Instr.header(fused, a, b, 0), constants[c]};
+          int index = immediateIndex(out, constants[c]);
+          n.words = op == Op.GETTABLE && index >= 0
+              ? new int[] {Instr.header(Op.GETI, a, b, index)}
+              : new int[] {Instr.header(fused, a, b, 0), constants[c]};
         }
+      }
+      if (op == Op.SETTABLE && constants[b] >= 0 && !flow.addressed.get(b)) {
+        int index = immediateIndex(out, constants[b]);
+        if (index >= 0) n.words = new int[] {Instr.header(Op.SETI, a, c, index)};
       }
       var effect = flow.effect(n);
       for (int w = effect.writes().nextSetBit(0); w >= 0; w = effect.writes().nextSetBit(w + 1)) {
@@ -151,6 +158,14 @@ public final class Optimizer {
       }
     }
     return flow.emit(out);
+  }
+
+  private static int immediateIndex(Assembler pool, int constant) {
+    // Hooks observe the key's exact type, so a long/byte/etc. must retain its slot.
+    if (pool.symbols[constant] != null || pool.linked[constant] || Type.fromTag(pool.types[constant]) != Type.INT)
+      return -1;
+    long value = pool.constants[constant];
+    return value >= 0 && value <= 255 ? (int)value : -1;
   }
 
   private static void hoistConstants(InstructionFlow flow, Assembler pool) {
