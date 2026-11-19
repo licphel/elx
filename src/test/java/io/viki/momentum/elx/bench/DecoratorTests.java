@@ -16,7 +16,25 @@ public final class DecoratorTests {
   public static void run() {
     String wrap="local function wrap(fn,a=1,b=2,rest...){assert(type(fn)=='function');local n=a+b;"
         +"for v in itr(rest){n+=v;}return function(x){return fn(x)+n;};}";
+    String repeat = """
+        local state={calls=0};
+        function decora(fn,times) {
+            return function(args...) {
+                for i=0,i<times,i++ { fn(*args); }
+            }
+        }
+        @decora(3)
+        @decora(2)
+        function printme(me) {
+            assert(me=="I've been printed 6 times");
+            state.calls++;
+            print(me);
+        }
+        printme("I've been printed 6 times");
+        return state.calls;
+        """;
     String[] programs={
+        repeat,
         wrap+"@wrap local function f(x){return x;}return f(1);",
         wrap+"@wrap() local function f(x){return x;}return f(1);",
         wrap+"@wrap(2,b=4) function f(x){return x;}return f(1);",
@@ -40,7 +58,7 @@ public final class DecoratorTests {
         "local function d(fn){return function(){return fn()+1;};}local answer=0;{local d=@d function(){return 5;};answer=d();}return answer;",
         "local function d(fn){return fn;}@d local function outer(n){@d local function inner(x){return x+n;}return inner(2);}return outer(5);"
     };
-    long[] expected={4,4,7,7,7,21,7,7,7,6,7,21,7,120,120,6,7};
+    long[] expected={6,4,4,7,7,7,21,7,7,7,6,7,21,7,120,120,6,7};
     Compiler compiler=new Compiler();
     for(boolean nativeMemory:new boolean[]{false,true}) {
       for(int i=0;i<programs.length;i++) {

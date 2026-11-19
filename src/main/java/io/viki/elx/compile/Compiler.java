@@ -502,20 +502,17 @@ public final class Compiler {
     }
 
     private void write(Target target, Expr source) {
-      Expr data = value(source);
       Binding binding = target.binding();
+      if (binding != null && binding.capture() >= 0) {
+        throw lexer.error("Captured variables are read-only");
+      }
+      Expr data = value(source);
       if (binding != null) {
         if (binding.width() != data.width() || binding.multiple() != data.multiple()) {
           throw lexer.error("Assignment changes value shape");
         }
-        if (binding.capture() >= 0) {
-          for (int i = 0; i < binding.width(); i++) {
-            code.r(Op.SETUPVAL, data.register() + i, binding.capture() + i, 0);
-          }
-        } else {
-          for (int i = 0; i < binding.width(); i++) {
-            code.r(Op.MOVE, binding.base() + i, data.register() + i, 0);
-          }
+        for (int i = 0; i < binding.width(); i++) {
+          code.r(Op.MOVE, binding.base() + i, data.register() + i, 0);
         }
       } else {
         data = scalar(data);
@@ -1429,7 +1426,7 @@ public final class Compiler {
       Binding binding = target.binding();
       if (binding != null) {
         if (binding.capture() >= 0) {
-          code.r(Op.UPVALREF, at, binding.capture(), 0);
+          throw lexer.error("Cannot take a writable address of a read-only captured variable");
         } else {
           code.r(Op.LOCALREF, at, binding.base(), 0);
         }

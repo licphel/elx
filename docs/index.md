@@ -159,9 +159,9 @@ A local name is found by searching the innermost visible scope and then its pare
 
 The compiler handles a directly assigned function specially. Both `local function f(...) { ... }` and `local f = function(...) { ... }` establish `f` while compiling the function body, allowing the function to call itself. A named function also has an internal self binding for recursion.
 
-The current closure implementation copies captured values into the closure when it is created. Changes to a captured scalar persist in that closure's own storage. The outer scalar keeps its own storage. Captured tables and lists continue to refer to the same containers, so their contents provide shared mutable state.
+A closure captures a copy of each referenced outer binding when it is created. Captured bindings are read-only: assignment, compound assignment, increment, decrement, and taking their writable address are compile-time errors. The enclosing function can still modify its own binding. To obtain mutable storage for each invocation, copy the capture into a local variable inside the closure, such as `local remaining = rep`.
 
-For example, with `local x = 3`, a closure that increments its captured `x` can return `4` and then `5`, while the enclosing function still reads `3`. A captured list containing `x` instead lets both functions observe changes to the same list element.
+Captured tables and lists still refer to the same containers. Their entries remain mutable, so closures can share state through a container. A pointer created in the owning scope can also be captured and dereferenced to access its original target.
 
 A declaration with several names receives several values. `local a, b = pair()` requests two return values, while `local a = pair()` keeps the first. The compiler checks the value count for multiple declarations, so matching the destination count is part of the assignment contract.
 
@@ -249,13 +249,22 @@ Decorator expressions and their arguments are evaluated once, from top to bottom
 Decorators work on local and global declarations, table functions, methods, and function expressions:
 
 ```
-local function addResult(fn, amount=1) {
-  return function(x) { return fn(x) + amount }
+function decora(fn, times) {
+  return function(args...) {
+    for i=0, i<times, i++ { fn(*args) }
+  }
 }
-@addResult(amount=3)
-local function twice(x) { return x * 2 }
-assert(twice(4) == 11)
+
+@decora(3)
+@decora(2)
+function printme(me) {
+  print(me)
+}
+
+printme("I've been printed 6 times")
 ```
+
+Here `printme` becomes `decora(decora(originalPrintme, 2), 3)`. Calling it forwards the supplied message through both wrappers and prints it six times. The returned wrapper controls argument forwarding and return values, just like an ordinary function.
 
 The expression form is `local f = @wrap(arguments) function(parameters) { body }`. A decorated method still receives `self` when called with the colon syntax. Decorators use the regular function-call bytecode, so an identity decorator adds no per-call dispatch to the original function.
 
@@ -413,7 +422,7 @@ Regular expressions use Java pattern syntax. All functions accept text first and
 
 Strings, containers, functions, and pointer handles live in the managed heap. The collector follows typed references from active calls, globals, loaded code and modules, and explicit roots. A numeric value remains a number even when its bits resemble an address.
 
-The address operator `&location` creates a managed pointer to a writable location. `*pointer` reads that location, and assigning to it writes through the pointer. Locations include locals, captures, container entries, and globals. A container pointer follows its owner and key or index, allowing the container to resize while the pointer continues to select the entry.
+The address operator `&location` creates a managed pointer to a writable location. `*pointer` reads that location, and assigning to it writes through the pointer. Writable locations include locals, container entries, and globals. Captured bindings are read-only and cannot be addressed directly. A container pointer follows its owner and key or index, allowing the container to resize while the pointer continues to select the entry.
 
 Pointers to stack locations carry frame-lifetime checks. Their handles can survive a function return, but accessing a location whose frame has ended raises an error. Keeping a pointer handle alive preserves the handle and its reachable owners. The pointed-to location still obeys its own lifetime.
 

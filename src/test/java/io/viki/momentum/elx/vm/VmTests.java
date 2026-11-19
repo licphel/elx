@@ -23,6 +23,7 @@ public final class VmTests {
     VoidConversionTests.run();
     CallWindowTests.run();
     DecoratorTests.run();
+    io.viki.elx.bench.CaptureTests.run();
     io.viki.elx.HashTests.run();
     exercise(new JavaMemory(32));exercise(new NativeMemory(32));
     SimpleBenchTests.run();

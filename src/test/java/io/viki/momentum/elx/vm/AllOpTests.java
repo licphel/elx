@@ -55,7 +55,7 @@ final class AllOpTests {
       "local _value=3;return _value",
       "local t={};setmetatable(t,{['add']=function(a,b) {return b*3}});return t+1",
       "local t={};setmetatable(t,{get=function(self,key) {require('gc').collect();return key}});return len(t.abc)",
-      "local n=0;local function f(x) {n+=x;return n};return f(1)+f(1)"
+      "local n=[0];local function f(x) {n[0]+=x;return n[0]};return f(1)+f(1)"
     };
     for(String source:scripts){vm.execute(compiler.compile(source));eq(Slot.bits(vm.memory(),vm.results()),3);}
     SimpleLibrary library=new SimpleLibrary().function("host",call->{

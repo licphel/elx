@@ -530,3 +530,21 @@ function vararg(a, b...) {
 }
 
 vararg(1,1,2,3)
+
+ function decora(fn, rep) {
+      return function(args...) {
+          local remaining=rep;
+          while(bool(remaining--)) {
+              fn(*args);
+          }
+      };
+  }
+
+
+@decora(3)
+@decora(2)
+function printme(me) {
+    print(me);
+}
+
+printme("I've been printed 6 times")

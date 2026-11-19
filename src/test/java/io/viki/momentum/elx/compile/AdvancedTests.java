@@ -89,8 +89,8 @@ public final class AdvancedTests {
       expect(vm,"local f=function(a,b) { return a*10+b }; local p=[2,3]; return f(*p)",23);
       expect(vm,"function f() { return *[1,2,3] } local a,b,c=f(); return a,b,c",1,2,3);
       expect(vm,"function fib(n) { if n<2 { return n } return fib(n-1)+fib(n-2) } return fib(10)",55);
-      expect(vm,"local n=0; local f=function() { return n++ }; local a=f(); local b=f(); return a,b,n",0,1,0);
-      expect(vm,"function make(n) { return function(x) { n+=x; return n } } local a=make(1); local b=make(10); return a(2),a(3),b(1)",3,6,11);
+      expect(vm,"local n=0;local state=[n];local f=function() { return state[0]++ }; local a=f(); local b=f(); return a,b,n",0,1,0);
+      expect(vm,"function make(n) {local state=[n];return function(x) { state[0]+=x; return state[0] } } local a=make(1); local b=make(10); return a(2),a(3),b(1)",3,6,11);
       expect(vm,"local p=[7,8]; local f=function() { return p[0]+p[1] }; return f()",15);
       expect(vm,"""
           local T={}
@@ -176,7 +176,7 @@ public final class AdvancedTests {
     check(vm.link(library)==loaded);check(host.printed.toString().equals("141414"));scripts+=3;
     check(Disassembler.dump(image).contains("CALL"));
     Prototype shadow=COMPILER.compile("local function twice(x) {return x+1 } return twice(4)",library);vm.execute(shadow);check(Slot.bits(vm.memory(),vm.results())==5);scripts++;
-    Prototype collected=COMPILER.compile("local x=4;local f=function() {return ++x };gc();local t=[];return f(),f()",library);vm.execute(collected);check(Slot.bits(vm.memory(),vm.results())==5);check(Slot.bits(vm.memory(),vm.results()+Slot.SIZE)==6);scripts++;
+    Prototype collected=COMPILER.compile("local x=[4];local f=function() {return ++x[0] };gc();local t=[];return f(),f()",library);vm.execute(collected);check(Slot.bits(vm.memory(),vm.results())==5);check(Slot.bits(vm.memory(),vm.results()+Slot.SIZE)==6);scripts++;
   }
   private static void expect(VM vm,String source,long... expected){
     Prototype image=COMPILER.compile(source);int count=vm.execute(image);scripts++;

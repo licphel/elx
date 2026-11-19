@@ -18,22 +18,22 @@ public final class PointerClosureTests {
       try (Bench.Runtime runtime = new Bench.Runtime(nativeMemory)) {
         escapedLocalPointer(runtime, false);
         escapedLocalPointer(runtime, true);
-        expect(runtime, "local function make(){local v=0;return function(){local vptr=&v;return (*vptr)++;}};"
-            + "local f=make();return f(),f(),f()", 0, 1, 2);
-        expect(runtime, "local function make(){local v=0;return function(){local p=&v;"
-            + "require('gc').collect();return ++(*p);}};local f=make();return f(),f()", 1, 2);
-        expect(runtime, "local function make(){local v=41;return function(){return &v;}};"
-            + "local f=make();local p=f();f=void;require('gc').collect();return (*p)++,*p", 41, 42);
-        expect(runtime, "local function make(){local v=7;return function(){return &v;}};"
+        failure(runtime, SyntaxException.class, "local function make(){local v=0;return function(){local vptr=&v;return (*vptr)++;}};"
+            + "local f=make();return f(),f(),f()", "captured variable");
+        failure(runtime, SyntaxException.class, "local function make(){local v=0;return function(){local p=&v;"
+            + "require('gc').collect();return ++(*p);}};local f=make();return f(),f()", "captured variable");
+        failure(runtime, SyntaxException.class, "local function make(){local v=41;return function(){return &v;}};"
+            + "local f=make();local p=f();f=void;require('gc').collect();return (*p)++,*p", "captured variable");
+        failure(runtime, SyntaxException.class, "local function make(){local v=7;return function(){return &v;}};"
             + "local a=make();local b=make();local p=a();local q=a();local r=b();"
-            + "*p=11;return *q,*r", 11, 7);
-        expect(runtime, "local v=0;local f=function(){local p=&v;return (*p)++;};"
-            + "v=10;return f(),f(),v", 0, 1, 10);
+            + "*p=11;return *q,*r", "captured variable");
+        failure(runtime, SyntaxException.class, "local v=0;local f=function(){local p=&v;return (*p)++;};"
+            + "v=10;return f(),f(),v", "captured variable");
         expect(runtime, "local v=1;local p=&v;local f=function(){return (*p)++;};"
             + "return f(),f(),v", 1, 2, 3);
-        expect(runtime, "local function make(){local v=0;return function(){return function(){"
+        failure(runtime, SyntaxException.class, "local function make(){local v=0;return function(){return function(){"
             + "local p=&v;return (*p)++;};};};local outer=make();local inner=outer();"
-            + "outer=void;require('gc').collect();return inner(),inner()", 0, 1);
+            + "outer=void;require('gc').collect();return inner(),inner()", "captured variable");
         expect(runtime, "local v=5;local p=&v;return (*p)++,++(*p),(*p)--,--(*p),v", 5, 7, 7, 5, 5);
         expect(runtime, "local box={v=3};local calls={n=0};local function ptr(){"
             + "calls.n++;return &box.v;};local old=(*ptr())++;return old,box.v,calls.n", 3, 4, 1);
@@ -44,7 +44,7 @@ public final class PointerClosureTests {
         failure(runtime, IllegalStateException.class, "local function make(){local v=0;local p=&v;"
             + "return function(){return (*p)++;};};local f=make();return f()", "returned local frame");
         failure(runtime, IllegalArgumentException.class, "local v=0;local f=function(){"
-            + "local vptr=&v;return (*v)++;};return f()", "dereference");
+            + "return (*v)++;};return f()", "dereference");
         failure(runtime, SyntaxException.class, "local v=0;return &(v+1)", "assign");
         failure(runtime, SyntaxException.class, "return &1", "assign");
         checks++;

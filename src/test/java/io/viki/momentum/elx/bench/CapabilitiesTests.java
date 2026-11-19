@@ -40,7 +40,7 @@ public final class CapabilitiesTests {
         expect(r,"local x=1; if false { local p=&x } x+=2; return x",3);
         expect(r,"local x=1; for i=0,i<4,i++ { local p=&x; *p+=i } return x",7);
         expect(r,"local function make(x) { local heap=[x];return &heap[0] } local p=make(3); *p+=4; return *p",7);
-        expect(r,"local x=3; local function capture() { local p=&x; *p+=1;return *p } return capture(),capture(),x",4,5,3);
+        expect(r,"local x=3;local state=[x];local function capture() { local p=&state[0]; *p+=1;return *p } return capture(),capture(),x",4,5,3);
         expect(r,"local xs=[1];local p=&xs[0];for i=1,i<100,i++ { xs[i]=i } *p=42;return xs[0],*p",42,42);
         expect(r,"local t={x=1};local p=&t.x;for i=0,i<100,i++ { t[i]=i } *p=42;return t.x,*p",42,42);
         expect(r,"local f=function(x) { return x+1 }; local p=&f; return (*p)(4)",5);

@@ -14,11 +14,11 @@ check(bool(1.0) && !bool(0.0),'explicit casts and boolean not');
 check(short(32768)==-32768,'narrowing cast');
 check(1.5f+2.5f==4.0f && 1.5+2.5==4.0,'floating arithmetic');
 
-local sideEffects=0;
-local function bump() { sideEffects+=1; return true; };
+local sideEffects=[0];
+local function bump() { sideEffects[0]+=1; return true; };
 local v =(false && bump()==false);
 check(true || bump(),'or short circuit');
-check(sideEffects==0,'short circuit skipped call');
+check(sideEffects[0]==0,'short circuit skipped call');
 
 local text='value='+17+':'+true+':'+null;
 check(text=='value=17:true:null','mixed string concatenation');
@@ -93,7 +93,7 @@ check(named(c=5,a=1)==9,'named arguments and defaults');
 check(named(**{a=2,c=6})==11,'named table expansion');
 local function rest(first,tail...) {return first+len(tail);};
 check(rest(4,8,9)==6,'variadic list rest');
-local closureFactory=function(seed) {return function(value) {seed+=value;return seed;};};
+local closureFactory=function(seed) {local state=[seed];return function(value) {state[0]+=value;return state[0];};};
 local closure=closureFactory(2);
 check(closure(3)==5 && closure(4)==9,'closure captures');
 
@@ -267,11 +267,13 @@ check(methods:declared(5)==methods.assigned(methods,5),'table function declarati
 local captured = 1;
 local function upvalueTest() {
     return function() {
-        captured++;
+        local value=captured;
+        value++;
+        return value;
     }
 }
 
-upvalueTest()();
+assert(upvalueTest()()==2);
 assert(captured==1);
 
 local function our_range(start, stop, step) {

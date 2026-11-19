@@ -53,11 +53,11 @@ public final class PcallTests {
       equal(invalidHandler.getMessage(), "pcall argument 1 must be callable");
 
       try (Results values = execute(context,
-          "local handlerCalls=0; " +
+          "local handlerCalls=[0]; " +
               "local ok,value,calls=pcall(" +
               "function() { return 7 }, " +
-              "function(error) { handlerCalls+=1; return 8 }); " +
-              "return ok,value,handlerCalls")) {
+              "function(error) { handlerCalls[0]+=1; return 8 }); " +
+              "return ok,value,handlerCalls[0]")) {
         equal(values.size(), 3);
         equal(value(values, 0), true);
         equal(value(values, 1), 7L);
@@ -77,11 +77,11 @@ public final class PcallTests {
       }
 
       try (Results values = execute(context,
-          "local handlerCalls=0; " +
+          "local handlerCalls=[0]; " +
               "local ok,kind,cause,trace,calls=pcall(" +
               "function() { throw('target failure') }, " +
-              "function(error) { handlerCalls+=1; " +
-              "return type(error),error.cause,type(error.stacktrace),handlerCalls }); " +
+              "function(error) { handlerCalls[0]+=1; " +
+              "return type(error),error.cause,type(error.stacktrace),handlerCalls[0] }); " +
               "return ok,kind,cause,trace,calls")) {
         equal(values.size(), 5);
         equal(value(values, 0), false);
